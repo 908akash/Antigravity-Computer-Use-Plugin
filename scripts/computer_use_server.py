@@ -1,4 +1,4 @@
-"""Cross-platform macOS & Windows Computer Use MCP Server & CLI (v3.2.0).
+"""Computer Use MCP Server & CLI for macOS and Windows (v3.2.0).
 
 Unified MCP JSON-RPC 2.0 server dispatching OS primitives to native platform
 backends (`win32_backend.py` on Windows 10/11, `macos_backend.py` + compiled
@@ -3251,7 +3251,7 @@ def run_self_test() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Cross-Platform macOS & Windows Computer Use MCP Server & CLI")
+    parser = argparse.ArgumentParser(description="Computer Use MCP Server & CLI for macOS and Windows")
     parser.add_argument("--self-test", action="store_true", help="Run non-invasive readiness & security self-test")
     parser.add_argument("--call", type=str, help="Invoke a single tool by name via CLI")
     parser.add_argument("--args", type=str, default="{}", help="JSON object of tool arguments for --call")

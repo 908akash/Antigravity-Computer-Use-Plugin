@@ -17,7 +17,7 @@ private let HUD_BRAND: String = {
     return raw.isEmpty ? "Antigravity" : raw
 }()
 
-private let DEFAULT_PILL_CAPTION = "\(HUD_BRAND) is using your computer"
+private let DEFAULT_PILL_CAPTION = "\(HUD_BRAND) is using your Computer"
 private let THINKING_PILL_CAPTION = "\(HUD_BRAND) • Thinking..."
 private let WAITING_PILL_CAPTION = "\(HUD_BRAND) • Waiting for model..."
 private let THINKING_DELAY_SEC: Double = 1.6
@@ -576,7 +576,8 @@ final class OverlayHUDController {
 
         if selfTest {
             let capChecks =
-                formatPillCaption("Inspecting Discord.exe") == DEFAULT_PILL_CAPTION
+                DEFAULT_PILL_CAPTION == "\(HUD_BRAND) is using your Computer"
+                && formatPillCaption("Inspecting Discord.exe") == DEFAULT_PILL_CAPTION
                 && formatPillCaption("Inspecting Safari.app") == DEFAULT_PILL_CAPTION
                 && formatPillCaption("UI Tree • TextEdit.app") == DEFAULT_PILL_CAPTION
                 && formatPillCaption("Invoke Button • HWND 12345") == DEFAULT_PILL_CAPTION

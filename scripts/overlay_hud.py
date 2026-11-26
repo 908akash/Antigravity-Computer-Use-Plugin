@@ -815,7 +815,7 @@ def _finite_float(val: object, default: float) -> float:
 
 
 HUD_BRAND = (os.environ.get("CUA_HUD_BRAND") or "Antigravity").strip() or "Antigravity"
-DEFAULT_PILL_CAPTION = f"{HUD_BRAND} is using your computer"
+DEFAULT_PILL_CAPTION = f"{HUD_BRAND} is using your Computer"
 THINKING_PILL_CAPTION = f"{HUD_BRAND} • Thinking..."
 WAITING_PILL_CAPTION = f"{HUD_BRAND} • Waiting for model..."
 THINKING_DELAY_SEC = 1.6  # Brief grace window after a tool finishes before showing Thinking...
@@ -1017,7 +1017,7 @@ def build_black_pill_frames(
 
         pill_frame = static_pill.copy()
 
-        # Traveling metallic pearl/ice-blue glimmer wave across "Antigravity is using your computer"
+        # Traveling metallic pearl/ice-blue glimmer wave across "Antigravity is using your Computer"
         wave_center = -0.28 + 1.56 * phase
         dist = (nx_txt - wave_center) / 0.21
         glint = np.exp(-(dist * dist))

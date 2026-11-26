@@ -1093,6 +1093,7 @@ def main() -> int:
         if IS_WIN:
             assert server_mod._resolve_vk_token("+")[0] == 0xBB
             import overlay_hud as hud_mod
+            assert hud_mod.DEFAULT_PILL_CAPTION == "Antigravity is using your Computer"
             assert hud_mod._format_pill_caption("Inspecting Discord.exe") == hud_mod.DEFAULT_PILL_CAPTION
             assert hud_mod._format_pill_caption("UI Tree • notepad.exe") == hud_mod.DEFAULT_PILL_CAPTION
             assert hud_mod._format_pill_caption("Invoke Button • HWND 12345") == hud_mod.DEFAULT_PILL_CAPTION

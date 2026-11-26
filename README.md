@@ -10,21 +10,23 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the internals, [`skills/computer-u
 
 ## Install in Antigravity
 
-### One-prompt install (macOS & Windows)
+### One-prompt install (auto-detects macOS or Windows)
 
-Copy and paste the matching prompt straight into Antigravity to install and verify the plugin automatically:
+Paste this single prompt into Antigravity on either a Mac or a Windows PC and your AI agent will detect your operating system and install and verify **Computer Use** automatically:
 
-**macOS:**
 ```text
-Download and install the Computer Use plugin from https://github.com/908akash/Antigravity-Computer-Use-Plugin/releases/latest/download/computer-use-v3.2.0.zip into ~/.gemini/config/plugins/computer-use then run scripts/launch_mcp --self-test so its Python packages and Swift helpers are ready and share the customization link so I can enable it.
+Read https://github.com/908akash/Antigravity-Computer-Use-Plugin and install the Computer Use plugin for my current OS from https://github.com/908akash/Antigravity-Computer-Use-Plugin/releases/latest/download/computer-use-v3.2.0.zip (or by cloning the repository if the release zip is unavailable), run its OS self-test so all dependencies and native helpers are ready, tell me if any OS permissions need to be enabled, and give me the [Computer Use](customization://computer-use) link so I can turn it on.
 ```
 
-**Windows:**
-```text
-Download and install the Computer Use plugin from https://github.com/908akash/Antigravity-Computer-Use-Plugin/releases/latest/download/computer-use-v3.2.0.zip into %USERPROFILE%\.gemini\config\plugins\computer-use then run scripts\launch_mcp.cmd --self-test so its Python packages are ready and share the customization link so I can enable it.
-```
-
-After setup, Antigravity gives you the `[Computer Use](customization://computer-use)` toggle link so you can turn the plugin on and refresh MCP servers.
+> **Agent auto-install instructions (when reading this repository):**
+> 1. **Detect host OS** (`darwin` = macOS, `win32` = Windows 10/11).
+> 2. **Install into the Antigravity plugins folder**:
+>    - **macOS**: extract `computer-use-v3.2.0.zip` into `~/.gemini/config/plugins/` (creating `~/.gemini/config/plugins/computer-use` with `chmod +x ~/.gemini/config/plugins/computer-use/scripts/launch_mcp`), or `git clone` directly to `~/.gemini/config/plugins/computer-use`.
+>    - **Windows**: extract `computer-use-v3.2.0.zip` into `%USERPROFILE%\.gemini\config\plugins\` (creating `%USERPROFILE%\.gemini\config\plugins\computer-use`), or `git clone` directly to `%USERPROFILE%\.gemini\config\plugins\computer-use`.
+> 3. **Bootstrap & verify**:
+>    - **macOS**: run `~/.gemini/config/plugins/computer-use/scripts/launch_mcp --self-test` (installs `pillow` + `numpy` into the local runtime cache and compiles the Swift `AXUIElement` & HUD helpers). If `accessibilityTrusted` or `screenRecordingGranted` is `false`, instruct the user to toggle **Antigravity** on under **System Settings > Privacy & Security > Accessibility** and **Screen & System Audio Recording** (and **Quit & Reopen** if macOS prompts).
+>    - **Windows**: run `"%USERPROFILE%\.gemini\config\plugins\computer-use\scripts\launch_mcp.cmd" --self-test` (installs `pillow` + `numpy` into the local runtime cache and verifies Win32 Per-Monitor DPI v2 readiness).
+> 4. **Hand back the toggle link**: share `[Computer Use](customization://computer-use)` so the user can enable the plugin and refresh MCP servers.
 
 ### macOS permissions (one-time setup)
 
@@ -119,7 +121,7 @@ Do not copy `${PLUGIN_ROOT}` or `${PLUGIN_DATA}` placeholders from Antigravity's
 
 While any app grant is active, the click-through HUD (`overlay_hud_mac` on macOS using `NSWindow.sharingType = .none`; `overlay_hud.py` on Windows using `WDA_EXCLUDEFROMCAPTURE`) displays a frosty screen-border glow, click ripples, and a pitch-black top status pill with the official 4-color Antigravity mark:
 
-- During tool execution and for the first `1.6s` after a tool finishes, the pill shows `Antigravity is using your computer` or clean stage steps like `3/5 Opening desktop app` with a frosted `N/M` step badge (never leaking `.app`/`.exe` filenames, paths, or window IDs).
+- During tool execution and for the first `1.6s` after a tool finishes, the pill shows `Antigravity is using your Computer` or clean stage steps like `3/5 Opening desktop app` with a frosted `N/M` step badge (never leaking `.app`/`.exe` filenames, paths, or window IDs).
 - After `1.6s` idle it switches to `Antigravity • Thinking...` for up to `90s`.
 - After `90s` idle it switches to `Antigravity • Waiting for model...` up to the `600s` safety timeout.
 - The pill shimmer runs on a constant `2.15s` cycle (`28` logical frames) regardless of tool latency.
