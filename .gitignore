@@ -1,0 +1,16 @@
+.runtime/
+__pycache__/
+*.pyc
+*.pyo
+*.exe
+*.sha256
+*.tmp
+*.log
+*.webp
+*.png
+*.jpg
+!assets/*.png
+scratch/
+pylibs*/
+dist/
+*.zip
