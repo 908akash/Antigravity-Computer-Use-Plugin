@@ -1,52 +1,57 @@
 ---
 name: computer-use
 description: >-
-  Automate native Windows 10 and 11 desktop applications with the Windows Computer Use
-  MCP server (v3.1.0). Supports streaming 6 to 16 step cu_batch chapters with clean live
-  stage labels and steps_file execution and 120Hz hardware SendInput mouse paths and popup
-  aware WebP screenshots with numbered UI overlays and fast local element matching and
-  automatic idle dismissal with six safety layers. On Turn 1 read SKILL.md and ONLY
-  cu_batch.json in parallel because cu_batch wraps all 24 other tools. Prefer the browser
-  subagent for web pages and run_command for CLI work.
+  Automate native macOS and Windows desktop applications with the Computer Use
+  MCP server (v3.2.0). Supports streaming 6 to 16 step cu_batch chapters with clean
+  live stage labels and steps_file execution, 120Hz hardware CGEvent (macOS) and
+  SendInput (Windows) mouse paths, Retina and per-monitor DPI aware WebP screenshots
+  with numbered UI overlays, fast local element matching, and automatic idle dismissal
+  under six safety layers. On Turn 1 read SKILL.md and ONLY cu_batch.json in parallel
+  because cu_batch wraps all 24 other tools. Prefer the browser subagent for web pages
+  and run_command for CLI work.
 ---
 
-# Windows Computer Use (`v3.1.0`)
+# Computer Use (`v3.2.0`)
 
-Automate native Windows 10 and 11 desktop applications safely across any machine with no hardcoded app lists.
+Automate native **macOS** and **Windows 10/11** desktop applications safely across any machine with no hardcoded app lists.
 
-- Use the built in `browser` subagent for web pages and web apps.
-- Terminal commands and git and file edits run directly through `run_command` and file tools.
-- Native Windows desktop apps use `cu_batch` which wraps all 24 other `cu_*` tools plus `wait` for 1 to 80 steps per turn.
+- Use the built-in `browser` subagent for web pages and web apps.
+- Terminal commands, git, and file edits run directly through `run_command` and file tools.
+- Native desktop apps use `cu_batch`, which wraps all 24 other `cu_*` tools plus `wait` for 1 to 80 steps per turn.
 
 ---
 
-## Sanctioned MCP transport
+## Sanctioned MCP transport & OS readiness
 
-When the Windows Computer Use plugin is enabled the MCP host launches `computer-use-win32` inside your interactive Windows desktop session (`cu_status.desktopName == "Default"`). While apps are granted `overlay_hud.py` shows a click through top pill (`Antigravity is using your computer` or your clean `stage` label then `Thinking...` after `1.6`s and `Waiting for model...` after `90`s up to `600`s) along with a screen border glow and hardware dart cursor excluded from screenshots via `WDA_EXCLUDEFROMCAPTURE`.
+When the Computer Use plugin is enabled, the MCP host launches `computer-use` (`scripts/launch_mcp` on macOS, `scripts\launch_mcp.cmd` on Windows) inside your interactive desktop session (`cu_status.desktopName == "Default"`).
+
+- **macOS TCC readiness**: Check `cu_status` if accessibility or screenshots report missing permissions. Both **Accessibility** (`accessibilityTrusted: true`) and **Screen & System Audio Recording** (`screenRecordingGranted: true`) must be enabled manually by the user for Antigravity in **System Settings > Privacy & Security** — never click OS TCC or password prompts programmatically.
+- **Live visual indicator**: While apps are granted, the HUD (`overlay_hud_mac` on macOS with `sharingType = .none`, `overlay_hud.py` on Windows with `WDA_EXCLUDEFROMCAPTURE`) shows a click-through top pill (`Antigravity is using your computer` or your clean `stage` label, then `Thinking...` after `1.6s` and `Waiting for model...` after `90s` up to `600s`) and a frosty screen-border glow excluded from screenshots.
 
 > [!IMPORTANT]
-> Always call `cu_*` tools through MCP tool calls and never run `computer_use_server.py` through `run_command` to control live user windows. Shell commands run inside an isolated sandbox desktop that cannot reach user windows. If `cu_*` tools fail to load ask the user to refresh `computer-use-win32` in MCP Servers or toggle the plugin.
+> Always call `cu_*` tools through MCP tool calls and never run `computer_use_server.py` through `run_command` to control live user windows. If `cu_*` tools fail to load, ask the user to refresh `computer-use` in MCP Servers or toggle the plugin.
 
 ---
 
-## Streaming step by step workflow
+## Streaming step-by-step workflow
 
-1. Read only `cu_batch.json` on Turn 1.
-   Read `<appDataDir>/mcp/computer-use_computer-use-win32/cu_batch.json` in parallel with `SKILL.md` when not already loaded. Do not load every separate `cu_*.json` file unless you need a specific rare parameter because `cu_batch` executes every `cu_*` tool via `{"action": "<name_without_cu_>", ...}` with automatic `active_hwnd` chaining.
-2. Start fast with a two step bootstrap.
-   Do not spend a minute computing dozens of coordinates before touching the screen. On Turn 1 run a short two step `cu_batch`:
+1. **Read only `cu_batch.json` on Turn 1.**
+   Read `<appDataDir>/mcp/computer-use_computer-use/cu_batch.json` in parallel with `SKILL.md` when not already loaded. Do not load every separate `cu_*.json` file unless you need a rare parameter because `cu_batch` executes every `cu_*` tool via `{"action": "<name_without_cu_>", ...}` with automatic `active_hwnd` chaining.
+2. **Start fast with a two-step bootstrap.**
+   Do not spend a minute computing coordinates before touching the screen. On Turn 1 run a short two-step `cu_batch`:
    ```json
    {"stage": "1/4 Opening app", "steps": [{"action": "launch_app", "app": "<app>"}, {"action": "observe", "format": "webp"}]}
    ```
-   `cu_launch_app` discovers any installed GUI app dynamically and prefers Windows GUI binaries over same name CLI tools and auto grants access. `observe` returns numbered `[0..N]` UI Automation elements and window geometry and automatically detects open context menus or dropdown popups.
-3. Stream compact visual chapters of 6 to 16 steps.
-   Break multi step tasks like drawing or filling forms or configuring dialogs into tight chapters of 6 to 16 steps with a short human readable `stage` label such as `"2/4 Adjusting toolbar settings"`. Keep `stage` text clean and plain with no `.exe` filenames or raw window handles. End each chapter with `{"action": "observe", "format": "webp"}` so you see real visual state before deciding the next chapter.
-4. Use `steps_file` for dense calculated coordinates.
-   When a task needs many computed waypoints such as geometric art or repetitive grids generate JSON step chunks into `<scratch>/chapter_N.json` (1 to 80 steps per file) with Python and run each file cleanly with `cu_batch(hwnd=..., stage="3/5 Drawing details", steps_file="<scratch>/chapter_3.json")`.
-5. Use smooth multi point paths for curves and popups carefully.
-   Use `{"action": "drag", "points": [[x,y], ...], "smooth": true, "closed": true}` to trace smooth strokes or fillable closed shapes in one continuous 120Hz hardware `SendInput` motion. When a dropdown or right click context menu opens call `observe` or click directly inside the popup because `cu_click` preserves same process popups without dismissing them.
-6. Always clean up when finished.
-   End every completed task with `{"action": "revoke_app", "all": true}` so grants clear and the overlay dismisses right away and session screenshots are purged.
+   `cu_launch_app` discovers installed macOS `.app` bundles and Windows GUI apps dynamically and auto-grants access. `observe` returns numbered `[0..N]` Accessibility (`AXUIElement`) / UI Automation elements, Retina/DPI-calibrated window geometry, and automatically detects open context menus or dropdown popups.
+3. **Stream compact visual chapters of 6 to 16 steps.**
+   Break multi-step tasks into tight chapters of 6 to 16 steps with a short human-readable `stage` label such as `"2/4 Adjusting toolbar settings"`. Keep `stage` text clean and plain with no `.app`/`.exe` filenames, file paths, or raw window IDs. End each chapter with `{"action": "observe", "format": "webp"}` to verify real visual state.
+4. **Use OS-native shortcuts.**
+   - On **macOS (`darwin`)**: use `cmd` chords (`cmd+a`, `cmd+c`, `cmd+v`, `cmd+s`, `cmd+z`, `cmd+w`).
+   - On **Windows (`win32`)**: use `ctrl` chords (`ctrl+a`, `ctrl+c`, `ctrl+v`, `ctrl+s`, `ctrl+z`, `alt+f4`).
+5. **Use `steps_file` for dense calculated coordinates & smooth curves.**
+   For many computed waypoints, write JSON step chunks into `<scratch>/chapter_N.json` (1 to 80 steps) and execute with `cu_batch(hwnd=..., stage="3/5 Drawing details", steps_file="<scratch>/chapter_3.json")`. Use `{"action": "drag", "points": [[x,y], ...], "smooth": true, "closed": true}` for smooth 120Hz curves. Clicking inside open context menus or dropdown popups preserves same-process popups without dismissing them.
+6. **Always clean up when finished.**
+   End every completed task with `{"action": "revoke_app", "all": true}` so grants clear, the HUD dismisses immediately, and session screenshots are purged.
 
 ---
 
@@ -68,9 +73,11 @@ All 25 tools can be invoked inside `cu_batch`:
 
 ## Safety and recovery rules
 
-- Hard blocked categories return `policy_blocked`: terminals and shells (`powershell.exe` or `pwsh.exe` or `cmd.exe` or `wt.exe` or `wsl.exe` or `conhost.exe` or Windows Terminal AUMIDs) along with password managers and admin or UAC tools and agent hosts and blocked launch arguments (such as passing `cmd.exe` to `explorer.exe`) and `Win` key chords or `ctrl+shift+esc` or `ctrl+esc`.
-- Browsers default to `look_only` unless the user explicitly approves `allow_browser_input: true`.
-- `cu_zoom` requires a granted `hwnd` (or window bound `observation_id`) or explicit `allow_full_desktop: true`.
-- Sensitive editor protection returns `sensitive_file_guard` when typing into editors open to shell profiles or SSH keys or `.git/hooks` or MCP configs or executable scripts (`.bat` or `.cmd` or `.reg` or `.vbs` or `.ps1`) but allows regular source files like `.js` or `.py`.
-- If any call returns `user_closed_computer_use` the user pressed `Esc` to close Computer Use and every active grant was revoked immediately. Stop automating right away and check with the user if they interrupted mid task. When the user asks to resume or authorizes desktop control again call `cu_launch_app` or `cu_grant_app` to restart Computer Use cleanly.
-- Ask user confirmation before sending messages or emails or deleting files or submitting irreversible forms or financial actions. Stop immediately on `emergency_stop` (pointer moved to monitor top left corner) or `desktop_locked` or `elevated_window_uipi`.
+- Hard-blocked categories return `policy_blocked`:
+  - **macOS**: `Terminal`, `iTerm2`, `Warp`, `Ghostty`, `Alacritty`, `kitty`, `Keychain Access`, `Passwords`, `1Password`, `Bitwarden`, `Activity Monitor`, `SecurityAgent`, `CoreServicesUIAgent`, `System Settings` security/privacy panes, `Antigravity`, `Cursor`, `Claude`, `Codex`, plus `cmd+space`, `cmd+opt+esc`, and `cmd+ctrl+q`.
+  - **Windows**: `powershell.exe`, `pwsh.exe`, `cmd.exe`, `wt.exe`, `wsl.exe`, `conhost.exe`, Windows Terminal AUMIDs, password managers, UAC/admin tools, agent hosts, blocked launch arguments (e.g., passing `cmd.exe` to `explorer.exe`), `Win` key chords, `ctrl+shift+esc`, and `ctrl+esc`.
+- Browsers (`Safari`, `Arc`, `Google Chrome`, `Brave Browser`, `Firefox`, `Microsoft Edge`) default to `look_only` unless the user explicitly approves `allow_browser_input: true`.
+- `cu_zoom` requires a granted `hwnd` (or window-bound `observation_id`) or explicit `allow_full_desktop: true`.
+- Sensitive editor protection returns `sensitive_file_guard` when typing into editors open to `.env`, SSH keys, `.bashrc`, `.zshrc`, `.zprofile`, `.git/hooks`, MCP configs, or executable scripts (`.sh`, `.zsh`, `.bat`, `.cmd`, `.ps1`, `.reg`) while allowing regular source files like `.py`, `.js`, or `.ts`.
+- If any call returns `user_closed_computer_use`, the user pressed `Esc` to close Computer Use and all active grants were revoked immediately. Stop automating right away and check with the user; call `cu_launch_app` or `cu_grant_app` to restart cleanly when authorized.
+- Ask user confirmation before sending messages or emails, deleting files, or submitting irreversible forms or financial actions. Stop immediately on `emergency_stop` (pointer moved to monitor top-left corner), `desktop_locked`, or `elevated_window_uipi`.

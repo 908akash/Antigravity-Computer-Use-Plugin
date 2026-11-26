@@ -1,8 +1,8 @@
 {
   "name": "computer-use",
-  "displayName": "Windows Computer Use",
-  "version": "3.1.0",
-  "description": "Windows 10 and 11 desktop automation for AI coding agents over MCP. Runs multi step batches with live status pills and per monitor DPI awareness along with popup safe clicks and local UI matching under six safety layers.",
+  "displayName": "Computer Use",
+  "version": "3.2.0",
+  "description": "Cross-platform macOS and Windows desktop automation for AI coding agents over MCP. Runs multi-step batches with live status pills, Retina and per-monitor DPI awareness, popup-safe clicks, and local UI matching under six safety layers.",
   "author": {
     "name": "Akash Narayan",
     "url": "https://github.com/908akash"
@@ -11,8 +11,8 @@
   "repository": "https://github.com/908akash/Antigravity-Computer-Use-Plugin",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
-    "List open Windows apps and inspect a window's UI Automation tree",
+    "List open desktop apps and inspect a window's accessibility tree",
     "Open an installed desktop app and complete a task step by step with visual checks and clean grant cleanup",
-    "Capture a background screenshot of a window and zoom into a dense toolbar region"
+    "Capture a window screenshot and zoom into a dense toolbar region"
   ]
 }

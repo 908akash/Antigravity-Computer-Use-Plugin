@@ -1,0 +1,153 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PLUGIN_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+SERVER_PY="$PLUGIN_ROOT/scripts/computer_use_server.py"
+
+dir_is_writable() {
+    _d="$1"
+    [ -n "$_d" ] || return 1
+    mkdir -p "$_d" 2>/dev/null || return 1
+    _probe="$_d/.cua_write_probe_$$"
+    if : > "$_probe" 2>/dev/null; then
+        rm -f "$_probe" 2>/dev/null || true
+        return 0
+    fi
+    return 1
+}
+
+clean_env_dir() {
+    _v="$1"
+    case "$_v" in
+        ""|\$\{*) printf '%s' "" ;;
+        *) printf '%s' "$_v" ;;
+    esac
+}
+
+RUNTIME_ROOT=""
+for _cand in \
+    "$(clean_env_dir "${CUA_RUNTIME_DIR:-}")" \
+    "$(clean_env_dir "${PLUGIN_DATA:-}")" \
+    "$PLUGIN_ROOT/.runtime" \
+    "$HOME/Library/Application Support/antigravity-computer-use" \
+    "${TMPDIR:-/tmp}/antigravity-computer-use"
+do
+    [ -n "$_cand" ] || continue
+    if dir_is_writable "$_cand"; then
+        RUNTIME_ROOT="$_cand"
+        break
+    fi
+done
+
+if [ -z "$RUNTIME_ROOT" ]; then
+    RUNTIME_ROOT="${TMPDIR:-/tmp}/antigravity-computer-use"
+    mkdir -p "$RUNTIME_ROOT" 2>/dev/null || true
+fi
+
+export CUA_RUNTIME_DIR="$RUNTIME_ROOT"
+
+PYTHON_EXE=""
+FALLBACK_PY=""
+PYLIBS_DIR=""
+
+py_version_ok() {
+    "$1" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)" >/dev/null 2>&1
+}
+
+py_tag_for() {
+    "$1" -c "import sys; print('pylibs_cp' + str(sys.version_info[0]) + str(sys.version_info[1]))" 2>/dev/null || printf '%s' "pylibs"
+}
+
+py_has_deps() {
+    _exe="$1"
+    _libs="${2:-}"
+    if [ -n "$_libs" ]; then
+        CUA_PROBE_PYLIBS="$_libs" "$_exe" -c "import os,sys; p=os.environ.get('CUA_PROBE_PYLIBS',''); p and sys.path.insert(0,p); from PIL import Image; import numpy; assert hasattr(Image,'Resampling')" >/dev/null 2>&1
+    else
+        "$_exe" -c "from PIL import Image; import numpy; assert hasattr(Image,'Resampling')" >/dev/null 2>&1
+    fi
+}
+
+probe_python() {
+    [ -z "$PYTHON_EXE" ] || return 0
+    _cand="$1"
+    [ -n "$_cand" ] && [ -x "$_cand" ] || return 0
+    py_version_ok "$_cand" || return 0
+
+    if py_has_deps "$_cand" ""; then
+        PYTHON_EXE="$_cand"
+        return 0
+    fi
+
+    _tag=$(py_tag_for "$_cand")
+    _cand_libs="$RUNTIME_ROOT/$_tag"
+    if [ -d "$_cand_libs" ] && py_has_deps "$_cand" "$_cand_libs"; then
+        PYTHON_EXE="$_cand"
+        PYLIBS_DIR="$_cand_libs"
+        return 0
+    fi
+
+    if [ -z "$FALLBACK_PY" ]; then
+        FALLBACK_PY="$_cand"
+    fi
+    return 0
+}
+
+if [ -n "${CUA_PYTHON:-}" ]; then
+    probe_python "$CUA_PYTHON"
+fi
+
+if [ -z "$PYTHON_EXE" ]; then
+    for _cmd in python3 python3.13 python3.12 python3.11 python3.10 python3.9; do
+        _hit=$(command -v "$_cmd" 2>/dev/null || true)
+        [ -n "$_hit" ] && probe_python "$_hit"
+        [ -z "$PYTHON_EXE" ] || break
+    done
+fi
+
+if [ -z "$PYTHON_EXE" ]; then
+    for _cand in \
+        "/opt/homebrew/bin/python3" \
+        "/usr/local/bin/python3" \
+        "/Library/Frameworks/Python.framework/Versions/Current/bin/python3" \
+        "/usr/bin/python3"
+    do
+        probe_python "$_cand"
+        [ -z "$PYTHON_EXE" ] || break
+    done
+fi
+
+if [ -z "$PYTHON_EXE" ]; then
+    if [ -z "$FALLBACK_PY" ]; then
+        printf '[computer-use] No Python 3.9+ interpreter found. Install Python 3 or set CUA_PYTHON.\n' >&2
+        exit 1
+    fi
+    PYTHON_EXE="$FALLBACK_PY"
+    _tag=$(py_tag_for "$PYTHON_EXE")
+    PYLIBS_DIR="$RUNTIME_ROOT/$_tag"
+    if ! py_has_deps "$PYTHON_EXE" "$PYLIBS_DIR"; then
+        mkdir -p "$PYLIBS_DIR" 2>/dev/null || true
+        if ! "$PYTHON_EXE" -m pip --version >/dev/null 2>&1; then
+            "$PYTHON_EXE" -m ensurepip --upgrade >&2 || true
+        fi
+        if ! "$PYTHON_EXE" -m pip install --no-input --disable-pip-version-check --target "$PYLIBS_DIR" -r "$PLUGIN_ROOT/requirements.txt" >&2; then
+            printf '[computer-use] Failed to install required dependencies from "%s/requirements.txt" for "%s".\n' "$PLUGIN_ROOT" "$PYTHON_EXE" >&2
+            exit 1
+        fi
+    fi
+fi
+
+if [ -n "$PYLIBS_DIR" ]; then
+    export CUA_PYLIBS_DIR="$PYLIBS_DIR"
+    if [ -n "${PYTHONPATH:-}" ]; then
+        export PYTHONPATH="$PYLIBS_DIR:$PYTHONPATH"
+    else
+        export PYTHONPATH="$PYLIBS_DIR"
+    fi
+fi
+
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
+
+exec "$PYTHON_EXE" -u "$SERVER_PY" "$@"

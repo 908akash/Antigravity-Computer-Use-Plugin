@@ -83,16 +83,23 @@ def load_dart_cursor_mask_192() -> Image.Image:
 
 
 def _find_asar_icon_bytes() -> bytes | None:
-    local_app = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    prog = os.environ.get("ProgramFiles") or ""
-    prog86 = os.environ.get("ProgramFiles(x86)") or ""
-    candidates = [
-        Path(local_app) / "Programs" / "antigravity" / "resources" / "app.asar",
-    ]
-    if prog:
-        candidates.append(Path(prog) / "Antigravity" / "resources" / "app.asar")
-    if prog86:
-        candidates.append(Path(prog86) / "Antigravity" / "resources" / "app.asar")
+    candidates: list[Path] = []
+    if os.name == "nt":
+        local_app = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        prog = os.environ.get("ProgramFiles") or ""
+        prog86 = os.environ.get("ProgramFiles(x86)") or ""
+        candidates.append(Path(local_app) / "Programs" / "antigravity" / "resources" / "app.asar")
+        if prog:
+            candidates.append(Path(prog) / "Antigravity" / "resources" / "app.asar")
+        if prog86:
+            candidates.append(Path(prog86) / "Antigravity" / "resources" / "app.asar")
+    else:
+        candidates.extend(
+            [
+                Path("/Applications/Antigravity.app/Contents/Resources/app.asar"),
+                Path.home() / "Applications" / "Antigravity.app" / "Contents" / "Resources" / "app.asar",
+            ]
+        )
     for asar in candidates:
         if not asar.is_file():
             continue

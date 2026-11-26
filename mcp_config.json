@@ -1,17 +1,13 @@
 {
   "mcpServers": {
-    "computer-use-win32": {
-      "command": "cmd.exe",
-      "args": [
-        "/d",
-        "/c",
-        "${PLUGIN_ROOT}\\scripts\\launch_mcp.cmd"
-      ],
+    "computer-use": {
+      "command": "${PLUGIN_ROOT}/scripts/launch_mcp",
+      "args": [],
       "cwd": "${PLUGIN_ROOT}",
       "env": {
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
-        "CUA_SERVER_VERSION": "3.1.0",
+        "CUA_SERVER_VERSION": "3.2.0",
         "CUA_RUNTIME_DIR": "${PLUGIN_DATA}"
       }
     }

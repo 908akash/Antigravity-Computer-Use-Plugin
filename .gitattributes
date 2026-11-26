@@ -2,6 +2,9 @@
 *.cmd text eol=crlf
 *.bat text eol=crlf
 *.ps1 text eol=crlf
+scripts/launch_mcp text eol=lf
+*.sh text eol=lf
+*.swift text eol=lf
 *.py text eol=lf
 *.cs text eol=lf
 *.md text eol=lf

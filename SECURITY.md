@@ -1,51 +1,54 @@
-# Security policy
+# Security Policy
 
-Antigravity Computer Use Plugin v3.1.0 automates native Windows 10 and 11 desktop apps locally through the Model Context Protocol over standard input and output. Desktop input and screen capture carry real risk so the plugin limits access by default and stops immediately when you cancel.
+Antigravity Computer Use Plugin `v3.2.0` automates native **macOS** and **Windows 10/11** desktop apps locally through the Model Context Protocol over standard input and output. Desktop input and screen capture carry real risk, so the plugin limits access by default and stops immediately when you cancel.
 
 ## Supported versions
 
 Security fixes apply to the current release line.
 
-- Version 3.1.0 is supported
-- Older versions before 3.1.0 are not supported
+- Version `3.2.0` is supported
+- Older versions before `3.2.0` are not supported
 
-## Privilege model and Windows UIPI boundary
+## Standard-user privilege boundary
 
-The MCP server runs under your normal signed in Windows user account and never requests Administrator elevation. Windows User Interface Privilege Isolation blocks standard user processes from sending mouse or keyboard events to elevated Administrator windows. When a target window runs elevated the server stops and returns an `elevated_window_uipi` error because Windows blocks non elevated input to elevated windows.
+The MCP server always runs under your normal signed-in user account and never elevates privileges:
+- **macOS**: Relies on explicit manual TCC grants (**Accessibility** and **Screen & System Audio Recording**) configured by the user in **System Settings > Privacy & Security**. Never clicks or types into `SecurityAgent`, `CoreServicesUIAgent`, Touch ID / admin password prompts, TCC permission dialogs, or `System Settings` security/privacy panes. Refuses root-owned (`uid == 0`) processes.
+- **Windows**: Never requests Administrator elevation and stops with `elevated_window_uipi` when targeting elevated Administrator windows blocked by Windows UIPI.
 
 ## Session grants and blocked applications
 
-Every action requires an active per app session grant stored locally in `session_state.json`. Grants expire automatically after an idle timeout controlled by `CUA_GRANT_TTL_SEC` with a default of 600 seconds and are cleared when the owning MCP server process exits.
+Every inspected or controlled app requires an active session grant stored locally in `session_state.json`. Grants expire automatically after `CUA_GRANT_TTL_SEC` (`600` seconds by default) and are cleared when the MCP server exits.
 
-Browsers such as Chrome and Edge along with Firefox and Brave default to `look_only` grants so the agent can inspect tabs without mouse or keyboard input unless you explicitly allow browser input.
+Web browsers (`Safari`, `Arc`, `Google Chrome`, `Brave Browser`, `Firefox`, `Microsoft Edge`, `Opera`, `Vivaldi`) default to `look_only` read-only grants unless `allow_browser_input=true` is explicitly authorized.
 
-A built in deny list blocks access to high risk process categories and Start menu app identifiers even if a grant is requested:
+Built-in deny lists hard-block high-risk targets across both operating systems:
 
-| Category | Blocked processes |
-| --- | --- |
-| Terminals and shells | `cmd.exe` `powershell.exe` `pwsh.exe` `windowsterminal.exe` `wt.exe` `conhost.exe` `openconsole.exe` `mintty.exe` `alacritty.exe` `wezterm-gui.exe` `powershell_ise.exe` `wsl.exe` `git-bash.exe` `putty.exe` `tabby.exe` `hyper.exe` `conemu64.exe` |
-| Password managers and auth brokers | `1password.exe` `bitwarden.exe` `keepass.exe` `keepassxc.exe` `dashlane.exe` `credentialuibroker.exe` |
-| Security and admin tools | `consent.exe` `lockapp.exe` `logonui.exe` `sechealthui.exe` `regedit.exe` `taskmgr.exe` `mmc.exe` |
-| Agent host UIs | `antigravity.exe` `codex.exe` `claude.exe` |
+| Category | Blocked processes / apps |
+| :--- | :--- |
+| Terminals and shells (macOS) | `Terminal` `iTerm2` `Warp` `Ghostty` `Alacritty` `kitty` `WezTerm` `Hyper` `Tabby` `bash` `sh` `zsh` `fish` `osascript` `sudo` `su` |
+| Terminals and shells (Windows) | `cmd.exe` `powershell.exe` `pwsh.exe` `windowsterminal.exe` `wt.exe` `conhost.exe` `openconsole.exe` `mintty.exe` `alacritty.exe` `wezterm-gui.exe` `wsl.exe` `git-bash.exe` `putty.exe` `tabby.exe` `hyper.exe` `conemu64.exe` |
+| Password managers & auth prompts | `Keychain Access` `Passwords` `1Password` `Bitwarden` `KeePassXC` `Dashlane` `SecurityAgent` `CoreServicesUIAgent` `credentialuibroker.exe` |
+| OS security & system monitors | `Activity Monitor` `System Settings` security/privacy panes `consent.exe` `lockapp.exe` `logonui.exe` `sechealthui.exe` `regedit.exe` `taskmgr.exe` `mmc.exe` |
+| Agent host UIs | `Antigravity` `Cursor` `Claude` `Codex` |
+| Dangerous OS key chords | `cmd+space` `cmd+opt+esc` `cmd+ctrl+q` (macOS); `Win` chords `ctrl+shift+esc` `ctrl+esc` (Windows) |
 
-## Content and input safeguards
+## Content, editor, and password safeguards
 
-Before an action inspects or edits a supported text editor window the server checks the window title against sensitive file patterns. That guard blocks automation when an editor title matches shell startup scripts or SSH keys or credential files or git configuration or agent config files such as `mcp_config.json` and `claude_desktop_config.json` or `.git/hooks` or Windows script extensions like `.bat` and `.cmd` and `.ps1` and `.reg`.
+Before typing or sending key chords into an editor window (`TextEdit`, `Visual Studio Code`, `Notepad`, `Sublime Text`, `Zed`, `Xcode`, JetBrains IDEs, etc.), the server checks the window title against sensitive file patterns (`.env`, SSH keys, `.bashrc`, `.zshrc`, `.zprofile`, `.git/hooks`, `mcp_config.json`, `claude_desktop_config.json`, `.sh`, `.zsh`, `.ps1`, `.bat`, `.cmd`, `.reg`, `.pem`, `.key`) and blocks input with `sensitive_file_guard` while allowing regular source files (`.py`, `.js`, `.ts`).
 
-When Windows UI Automation walks controls in a granted app it checks password field metadata (`IsPassword`) and redacts password values before it returns control trees to the model.
+Both native accessibility bridges redact password field values (`AXSecureTextField` on macOS, `IsPasswordProperty` on Windows) before any control tree data reaches Python.
 
 ## Local privacy and screenshot cleanup
 
-This plugin sends zero telemetry and opens zero analytics connections. Screenshots and runtime state stay on your local machine inside the resolved runtime directory (`CUA_RUNTIME_DIR` or `PLUGIN_DATA` or `.runtime`). When app access is revoked or the MCP server exits it deletes captured screenshots and clears active grants.
+Zero telemetry and zero analytics. Screenshots, observations, and compiled helper binaries remain strictly inside the local runtime folder (`CUA_RUNTIME_DIR` / `PLUGIN_DATA` / `.runtime` / `~/Library/Application Support/antigravity-computer-use`). Screenshots and observations are purged automatically on `cu_revoke_app({"all": true})` and on MCP server exit.
 
 ## Physical emergency stops
 
-Whenever Computer Use is active an excluded screen border glow and top pill indicate control. You can halt automation at any moment:
-
-- Press physical `Esc` to dismiss the overlay HUD and restore system cursors and revoke all active app grants
-- Move the pointer into the upper left corner of any monitor to trigger `emergency_stop` and revoke all active grants
-- Leave the session idle past the idle timeout (`600` seconds by default) so the HUD shuts down automatically and restores normal cursors
+While Computer Use is active, an excluded screen-border glow and top status pill indicate control:
+- Press physical `Esc` at any time to dismiss the HUD and revoke all active app grants (`user_closed_computer_use`).
+- Move the pointer to the upper-left `(0, 0)` corner of any display to trigger `emergency_stop`.
+- Leave the session idle past `CUA_HUD_IDLE_TIMEOUT_SEC` (`600` seconds by default) for automatic HUD dismissal and grant expiry.
 
 ## Reporting a vulnerability
 
-Please report security vulnerabilities privately by direct message to [@908Akash on X](https://x.com/908Akash) or through GitHub Security Advisories on `https://github.com/908akash/Antigravity-Computer-Use-Plugin`. Include steps to reproduce the bug and affected Windows version details along with non sensitive logs so we can verify and fix the issue.
+Please report security vulnerabilities privately by direct message to [@908Akash on X](https://x.com/908Akash) or through GitHub Security Advisories on `https://github.com/908akash/Antigravity-Computer-Use-Plugin`. Include steps to reproduce and affected macOS or Windows version details along with non-sensitive logs.

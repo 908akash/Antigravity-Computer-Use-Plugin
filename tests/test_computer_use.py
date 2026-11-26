@@ -1,18 +1,21 @@
-"""End-to-end verification suite for Windows Computer Use MCP server (v3.1.0).
+"""End-to-end verification suite for Antigravity Computer Use MCP server (v3.2.0).
 
-Starts a dark-themed multi-control Tkinter Win32 window on a dedicated GUI thread,
-spawns `computer_use_server.py` over stdio MCP JSON-RPC 2.0, and verifies:
+Runs natively on both macOS (darwin, using the compiled Swift AppKit NSWindow
+harness `tests/macos_test_harness.swift`) and Windows 10/11 (win32, keeping the
+Win32 TkinterHarness untouched), spawning `computer_use_server.py` over stdio
+MCP JSON-RPC 2.0 and verifying:
   1. initialize + notifications/initialized + ping + tools/list (all 25 tools)
   2. cu_status + cu_list_windows + cu_wait_for_window
-  3. cu_grant_app + defense-in-depth blocks (powershell/cmd/wsl deny-list with &
-     without .exe, Terminal AUMID block, Win-key chord block, browser look_only,
-     sensitive editor guard blocking mcp_config.json while allowing .js files)
-  4. cu_ui_tree + cu_set_value + cu_click_element (live Tkinter state updates)
-  5. cu_screenshot (Win32 PrintWindow background capture -> non-blank PNG) + cu_zoom
-  6. cu_clipboard_write + cu_clipboard_read CF_UNICODETEXT round-trip & guards
+  3. cu_grant_app + defense-in-depth blocks (terminals/shells/password managers/
+     agent hosts, System Settings security panes / Terminal AUMID, blocked chords,
+     browser look_only, sensitive editor guard)
+  4. cu_ui_tree + cu_set_value (Unicode + ASCII) + cu_click_element (live UI state)
+  5. cu_screenshot (Retina screencapture on macOS / PrintWindow on Windows) + cu_zoom
+  6. cu_clipboard_write + cu_clipboard_read Unicode round-trip & guards
   7. HUD pill caption sanitization, constant 2.15s shimmer, execution/idle IPC,
-     Unicode/boundary local matcher checks, CLI stdout pipe isolation, grant TTL
-     auto-expiry, zero-user-path/AST-import static scan, and clean grant cleanup.
+     Unicode/boundary local matcher checks, modal non-deadlock (<1.5s), Esc cancel,
+     grant TTL auto-expiry, zero-user-path / zero-codename / AST-import static scan,
+     and clean grant cleanup.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from __future__ import annotations
 import ast
 import base64
 import ctypes
-from ctypes import wintypes
+import hashlib
 import io
 import json
 import os
@@ -32,8 +35,14 @@ import subprocess
 import sys
 import threading
 import time
-import tkinter as tk
 from typing import Any
+
+IS_WIN = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
+
+if IS_WIN:
+    from ctypes import wintypes
+    import tkinter as tk
 
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
 SERVER_SCRIPT = PLUGIN_DIR / "scripts" / "computer_use_server.py"
@@ -92,9 +101,10 @@ EXPECTED_TOOLS = {
     "cu_batch",
 }
 
-user32 = ctypes.windll.user32
-user32.SetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
-user32.SetWindowTextW.restype = wintypes.BOOL
+if IS_WIN:
+    user32 = ctypes.windll.user32
+    user32.SetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+    user32.SetWindowTextW.restype = wintypes.BOOL
 
 
 class TkinterHarness:
@@ -264,7 +274,6 @@ class TkinterHarness:
         app_btn_hwnd = int(apply_btn.winfo_id())
         png_btn_hwnd = int(ping_btn.winfo_id())
 
-        # Expose descriptive Win32 window captions on child HWNDs for WM_GETTEXT inspection
         user32.SetWindowTextW(wintypes.HWND(app_btn_hwnd), "Apply Action")
         user32.SetWindowTextW(wintypes.HWND(png_btn_hwnd), "Secondary Ping")
 
@@ -301,10 +310,105 @@ class TkinterHarness:
         root.after(10, _pump_tick)
         root.mainloop()
 
-        # Destroy all Tk widgets on the GUI thread to avoid Tcl_AsyncDelete warnings
         del status_var, status_banner, apply_btn, ping_btn, entry, btn_row, body, header
         root.destroy()
         del root
+
+
+class MacOSAppKitHarness:
+    """Native macOS AppKit NSWindow test harness (avoids deprecated Apple CLT Tk 8.5)."""
+
+    WINDOW_TITLE = "Antigravity CUA Verification Harness"
+
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen[str] | None = None
+        self.hwnd: int = 0
+        self.pid: int = 0
+        self.process_name: str = "macos_test_harness"
+        self._lock = threading.Lock()
+
+    def _compile(self) -> Path:
+        src = PLUGIN_DIR / "tests" / "macos_test_harness.swift"
+        bin_dir = RUNTIME_ROOT / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        bin_path = bin_dir / "macos_test_harness"
+        sha_path = bin_dir / "macos_test_harness.sha256"
+        src_sha = hashlib.sha256(src.read_bytes()).hexdigest()
+        if bin_path.is_file() and sha_path.is_file():
+            bin_sha = hashlib.sha256(bin_path.read_bytes()).hexdigest()
+            if sha_path.read_text(encoding="utf-8").strip() == f"{src_sha}:{bin_sha}":
+                return bin_path
+        subprocess.run(["xcrun", "swiftc", "-O", str(src), "-o", str(bin_path)], check=True, timeout=45)
+        os.chmod(bin_path, 0o755)
+        bin_sha = hashlib.sha256(bin_path.read_bytes()).hexdigest()
+        sha_path.write_text(f"{src_sha}:{bin_sha}\n", encoding="utf-8")
+        return bin_path
+
+    def start(self) -> None:
+        bin_path = self._compile()
+        self.proc = subprocess.Popen(
+            [str(bin_path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        assert self.proc.stdout is not None
+        line = self.proc.stdout.readline()
+        if not line:
+            err = self.proc.stderr.read() if self.proc.stderr else ""
+            raise RuntimeError(f"MacOSAppKitHarness exited prematurely: {err}")
+        ready = json.loads(line)
+        self.hwnd = int(ready["hwnd"])
+        self.pid = int(ready["pid"])
+        time.sleep(0.15)
+
+    def _send_cmd(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            assert self.proc is not None and self.proc.stdin is not None and self.proc.stdout is not None
+            self.proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            self.proc.stdin.flush()
+            line = self.proc.stdout.readline()
+            if not line:
+                raise RuntimeError("MacOSAppKitHarness closed stdout unexpectedly.")
+            return json.loads(line)
+
+    def set_title(self, new_title: str) -> None:
+        self._send_cmd({"cmd": "set_title", "title": new_title})
+        time.sleep(0.08)
+
+    def set_modal(self, active: bool) -> None:
+        self._send_cmd({"cmd": "set_modal", "active": bool(active)})
+        time.sleep(0.12)
+
+    def snapshot(self) -> dict[str, Any]:
+        data = self._send_cmd({"cmd": "snapshot"})
+        return {
+            "hwnd": int(data["hwnd"]),
+            "entry_hwnd": 0,
+            "apply_btn_hwnd": 0,
+            "ping_btn_hwnd": 0,
+            "entry_value": str(data["entry_value"]),
+            "apply_clicks": int(data["apply_clicks"]),
+            "ping_clicks": int(data["ping_clicks"]),
+            "status_text": str(data["status_text"]),
+        }
+
+    def stop(self) -> None:
+        if self.proc is None:
+            return
+        try:
+            if self.proc.stdin and self.proc.poll() is None:
+                self.proc.stdin.write('{"cmd":"quit"}\n')
+                self.proc.stdin.flush()
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait(timeout=2.0)
 
 
 class McpStdioClient:
@@ -314,6 +418,8 @@ class McpStdioClient:
         env = os.environ.copy()
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        if not env.get("CUA_PYLIBS_DIR") and _pylibs_candidates:
+            env["CUA_PYLIBS_DIR"] = str(_pylibs_candidates[0])
         self.proc = subprocess.Popen(
             [python_exe, str(server_script)],
             stdin=subprocess.PIPE,
@@ -367,14 +473,32 @@ class McpStdioClient:
             self.proc.wait(timeout=2.0)
 
 
+def _get_stdlib_module_names() -> set[str]:
+    names = getattr(sys, "stdlib_module_names", None)
+    if names is not None:
+        return set(names)
+    # Python 3.9 fallback (Apple CLT /usr/bin/python3)
+    base = set(sys.builtin_module_names) | {
+        "__future__", "argparse", "ast", "atexit", "base64", "collections", "concurrent",
+        "contextlib", "ctypes", "datetime", "difflib", "errno", "fnmatch", "functools",
+        "glob", "hashlib", "heapq", "http", "importlib", "inspect", "io", "itertools",
+        "json", "logging", "math", "os", "pathlib", "platform", "plistlib", "posix",
+        "posixpath", "queue", "random", "re", "shutil", "signal", "socket", "ssl", "stat",
+        "string", "struct", "subprocess", "sys", "tempfile", "textwrap", "threading",
+        "time", "tkinter", "traceback", "typing", "unicodedata", "urllib", "uuid",
+        "warnings", "weakref", "winreg", "xml", "zipfile", "zlib",
+    }
+    return base
+
+
 def main() -> int:
-    harness = TkinterHarness()
+    harness: Any = MacOSAppKitHarness() if IS_MAC else TkinterHarness()
     harness.start()
     client = McpStdioClient(sys.executable, SERVER_SCRIPT)
-    results_summary: dict[str, Any] = {}
+    results_summary: dict[str, Any] = {"platform": sys.platform}
 
     try:
-        # 1. initialize + notifications/initialized + ping + tools/list (strict MCP lifecycle order)
+        # 1. initialize + notifications/initialized + ping + tools/list
         init_resp = client.request(
             "initialize",
             {
@@ -384,12 +508,12 @@ def main() -> int:
             },
         )
         server_info = init_resp["result"]["serverInfo"]
-        assert server_info["name"] == "computer-use-win32"
+        assert server_info["name"] == "computer-use", server_info
+        assert server_info["version"] == "3.2.0", server_info
         client.notify("notifications/initialized", {})
         ping_resp = client.request("ping")
         assert ping_resp["result"] == {}
 
-        # Clean starting state after handshake
         client.call_tool("cu_revoke_app", {"all": True})
 
         tools_resp = client.request("tools/list")
@@ -402,24 +526,40 @@ def main() -> int:
         assert by_name["cu_clipboard_read"]["annotations"]["readOnlyHint"] is True
         assert by_name["cu_wait_for_window"]["annotations"]["readOnlyHint"] is True
         assert by_name["cu_clipboard_write"]["annotations"]["readOnlyHint"] is False
+        assert by_name["cu_overlay"]["annotations"]["readOnlyHint"] is False
+        assert "horizontal" in by_name["cu_scroll"]["inputSchema"]["properties"]
         results_summary["toolsVerified"] = len(tools)
 
         # 2. cu_status + cu_list_windows + cu_wait_for_window
         status_res = client.call_tool("cu_status")
         assert not status_res["isError"], status_res
         status_data = status_res["structuredContent"]
-        assert status_data["dpiAware"] == "PerMonitorV2"
+        assert status_data["serverVersion"] == "3.2.0", status_data
+        assert status_data["dpiAware"] == ("PerMonitorV2" if IS_WIN else "RetinaLogicalPoints"), status_data
         assert status_data["desktopLocked"] is False
+
+        if IS_MAC:
+            results_summary["macosTccStatus"] = {
+                "accessibilityTrusted": status_data.get("accessibilityTrusted"),
+                "screenRecordingGranted": status_data.get("screenRecordingGranted"),
+            }
+            assert status_data.get("accessibilityTrusted") is True, (
+                f"macOS Accessibility permission required for live E2E tests. Status: {status_data}"
+            )
+            assert status_data.get("screenRecordingGranted") is True, (
+                f"macOS Screen Recording permission required for live E2E tests. Status: {status_data}"
+            )
 
         snap0 = harness.snapshot()
         target_hwnd = snap0["hwnd"]
         assert target_hwnd > 0
 
+        harness_proc = "macos_test_harness" if IS_MAC else "python.exe"
         wait_res = client.call_tool(
             "cu_wait_for_window",
             {
                 "title_contains": "Antigravity CUA Verification",
-                "process_name": "python.exe",
+                "process_name": harness_proc,
                 "timeout_sec": 5.0,
             },
         )
@@ -454,12 +594,29 @@ def main() -> int:
         assert zoom_desk_guard["isError"] is True
         assert "allow_full_desktop" in zoom_desk_guard["content"][0]["text"]
 
-        for blocked_proc in ("powershell.exe", "cmd.exe", "Antigravity.exe", "1Password.exe"):
+        blocked_procs = (
+            ("Terminal", "iTerm2", "Keychain Access", "Passwords", "1Password", "Activity Monitor", "SecurityAgent", "Antigravity", "Cursor", "powershell.exe")
+            if IS_MAC
+            else ("powershell.exe", "cmd.exe", "Antigravity.exe", "1Password.exe", "powershell", "wsl", "cmd")
+        )
+        for blocked_proc in blocked_procs:
             blk = client.call_tool("cu_grant_app", {"process_name": blocked_proc})
             assert blk["isError"] is True, f"Expected {blocked_proc} to be blocked"
             assert "policy_blocked" in blk["content"][0]["text"]
 
-        browser_grant = client.call_tool("cu_grant_app", {"process_name": "chrome.exe"})
+        if IS_MAC:
+            assert server_mod.check_blocked_system_window("System Settings", "Privacy & Security") is not None
+            assert server_mod.check_blocked_system_window("System Settings", "Screen & System Audio Recording") is not None
+            assert server_mod.check_blocked_system_window("System Settings", "Appearance") is None
+            for raw_blk, cmd_blk, args_blk in (
+                ("/usr/bin/open", ["/usr/bin/open"], ["-b", "com.apple.Terminal"]),
+                ("/usr/bin/python3.9", ["/usr/bin/python3.9"], []),
+                ("/usr/bin/perl", ["/usr/bin/perl"], []),
+            ):
+                assert server_mod._is_blocked_launch_target(raw_blk, cmd_blk, args_blk) is not None, (raw_blk, args_blk)
+
+        browser_name = "Safari" if IS_MAC else "chrome.exe"
+        browser_grant = client.call_tool("cu_grant_app", {"process_name": browser_name})
         assert not browser_grant["isError"], browser_grant
         assert browser_grant["structuredContent"]["mode"] == "look_only"
 
@@ -467,31 +624,38 @@ def main() -> int:
         assert not grant_res["isError"], grant_res
         assert grant_res["structuredContent"]["mode"] == "interactive"
 
-        winkey_res = client.call_tool("cu_key", {"hwnd": target_hwnd, "keys": "win+r"})
-        assert winkey_res["isError"] is True
-        assert "policy_blocked" in winkey_res["content"][0]["text"]
-
-        for blocked_chord in ("ctrl+shift+esc", "ctrl+esc"):
+        blocked_chords = ("cmd+space", "cmd+opt+esc", "cmd+ctrl+q", "ctrl+shift+esc") if IS_MAC else ("win+r", "ctrl+shift+esc", "ctrl+esc")
+        for blocked_chord in blocked_chords:
             blk_chord_res = client.call_tool("cu_key", {"hwnd": target_hwnd, "keys": blocked_chord})
             assert blk_chord_res["isError"] is True, f"Expected {blocked_chord} to be blocked"
             assert "policy_blocked" in blk_chord_res["content"][0]["text"]
 
-        explorer_cmd_res = client.call_tool("cu_launch_app", {"app": "explorer.exe", "args": ["cmd.exe"]})
-        assert explorer_cmd_res["isError"] is True
-        assert "policy_blocked" in explorer_cmd_res["content"][0]["text"]
+        if IS_WIN:
+            explorer_cmd_res = client.call_tool("cu_launch_app", {"app": "explorer.exe", "args": ["cmd.exe"]})
+            assert explorer_cmd_res["isError"] is True
+            assert "policy_blocked" in explorer_cmd_res["content"][0]["text"]
+            assert server_mod._is_blocked_launch_target(
+                "Terminal",
+                ["explorer.exe", "shell:AppsFolder\\Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"],
+            ) is not None
 
         # Sensitive editor title guard (unit + live end-to-end over MCP)
-        unit_sens = server_mod.check_sensitive_editor_title("notepad.exe", "mcp_config.json - Notepad")
-        assert unit_sens is not None and "sensitive_file_guard" in unit_sens
+        assert server_mod.check_sensitive_editor_title("notepad.exe", "mcp_config.json - Notepad") is not None
         assert server_mod.check_sensitive_editor_title("notepad.exe", "notes.txt - Notepad") is None
+        assert server_mod.check_sensitive_editor_title("TextEdit", ".zshrc — Edited") is not None
+        assert server_mod.check_sensitive_editor_title("TextEdit", "●.zshrc") is not None
+        assert server_mod.check_sensitive_editor_title("TextEdit", ".zprofile") is not None
+        assert server_mod.check_sensitive_editor_title("TextEdit", "deploy.sh - TextEdit") is not None
+        assert server_mod.check_sensitive_editor_title("TextEdit", "app.py - TextEdit") is None
+        assert server_mod.check_sensitive_editor_title("code.exe", "index.js - Visual Studio Code") is None
 
-        harness.set_title("mcp_config.json - Notepad")
+        harness.set_title("mcp_config.json - TextEdit" if IS_MAC else "mcp_config.json - Notepad")
         try:
             sens_live = client.call_tool("cu_type", {"hwnd": target_hwnd, "text": "injected"})
             assert sens_live["isError"] is True
             assert "sensitive_file_guard" in sens_live["content"][0]["text"]
         finally:
-            harness.set_title(TkinterHarness.WINDOW_TITLE)
+            harness.set_title(harness.WINDOW_TITLE)
         results_summary["securityGuardsVerified"] = True
 
         # 4. cu_ui_tree + cu_set_value + cu_click_element
@@ -500,26 +664,32 @@ def main() -> int:
         tree_data = tree_res["structuredContent"]
         tree_obs_id = tree_data["observationId"]
         elements = tree_data["elements"]
-        assert len(elements) >= 3, f"Expected >=3 child elements in Tkinter window, got {elements}"
+        assert len(elements) >= 3, f"Expected >=3 child elements in harness window, got {elements}"
 
-        entry_aid = f"hwnd:{snap0['entry_hwnd']}"
-        apply_aid = f"hwnd:{snap0['apply_btn_hwnd']}"
-        entry_el = next((e for e in elements if e.get("automationId") == entry_aid), None)
-        apply_el = next(
-            (e for e in elements if e.get("automationId") == apply_aid or e.get("name") == "Apply Action"),
-            None,
-        )
-        assert entry_el is not None, f"Entry {entry_aid} not found in UI tree: {elements}"
-        assert apply_el is not None, f"Apply button {apply_aid} not found in UI tree: {elements}"
+        if IS_WIN:
+            entry_aid = f"hwnd:{snap0['entry_hwnd']}"
+            apply_aid = f"hwnd:{snap0['apply_btn_hwnd']}"
+            entry_el = next((e for e in elements if e.get("automationId") == entry_aid), None)
+            apply_el = next(
+                (e for e in elements if e.get("automationId") == apply_aid or e.get("name") == "Apply Action"),
+                None,
+            )
+        else:
+            entry_el = next(
+                (e for e in elements if e.get("automationId") == "payloadEntry" or e.get("controlType") == "Edit"),
+                None,
+            )
+            apply_el = next(
+                (e for e in elements if e.get("automationId") == "applyActionButton" or e.get("name") == "Apply Action"),
+                None,
+            )
+        assert entry_el is not None, f"Entry element not found in UI tree: {elements}"
+        assert apply_el is not None, f"Apply Action button not found in UI tree: {elements}"
 
         unicode_name = "O\u2019Brien"
         set_uni_res = client.call_tool(
             "cu_set_value",
-            {
-                "observation_id": tree_obs_id,
-                "element_index": entry_el["index"],
-                "value": unicode_name,
-            },
+            {"observation_id": tree_obs_id, "element_index": entry_el["index"], "value": unicode_name},
         )
         assert not set_uni_res["isError"], set_uni_res
         deadline_u = time.monotonic() + 2.0
@@ -528,17 +698,13 @@ def main() -> int:
                 break
             time.sleep(0.03)
         assert harness.snapshot()["entry_value"] == unicode_name, (
-            f"Expected Tkinter Entry '{unicode_name}', got '{harness.snapshot()['entry_value']}'"
+            f"Expected entry '{unicode_name}', got '{harness.snapshot()['entry_value']}'"
         )
 
-        target_text = "Antigravity Win32 CUA Verified!"
+        target_text = "Antigravity macOS CUA Verified!" if IS_MAC else "Antigravity Win32 CUA Verified!"
         set_res = client.call_tool(
             "cu_set_value",
-            {
-                "observation_id": tree_obs_id,
-                "element_index": entry_el["index"],
-                "value": target_text,
-            },
+            {"observation_id": tree_obs_id, "element_index": entry_el["index"], "value": target_text},
         )
         assert not set_res["isError"], set_res
 
@@ -549,15 +715,12 @@ def main() -> int:
             time.sleep(0.03)
         snap_after_set = harness.snapshot()
         assert snap_after_set["entry_value"] == target_text, (
-            f"Expected Tkinter Entry '{target_text}', got '{snap_after_set['entry_value']}'"
+            f"Expected entry '{target_text}', got '{snap_after_set['entry_value']}'"
         )
 
         click_res = client.call_tool(
             "cu_click_element",
-            {
-                "observation_id": tree_obs_id,
-                "element_index": apply_el["index"],
-            },
+            {"observation_id": tree_obs_id, "element_index": apply_el["index"]},
         )
         assert not click_res["isError"], click_res
 
@@ -576,14 +739,14 @@ def main() -> int:
             "statusText": snap_after_click["status_text"],
         }
 
-        # Give Tkinter 60ms to repaint updated emerald banner before PrintWindow capture
-        time.sleep(0.06)
+        time.sleep(0.08)
 
-        # 5. cu_screenshot (Win32 PrintWindow) + cu_zoom
+        # 5. cu_screenshot + cu_zoom
         shot_res = client.call_tool("cu_screenshot", {"hwnd": target_hwnd})
         assert not shot_res["isError"], shot_res
         shot_meta = shot_res["structuredContent"]
-        assert shot_meta["captureMethod"] == "print_window_background", shot_meta
+        expected_cap = "screencapture_window" if IS_MAC else "print_window_background"
+        assert shot_meta["captureMethod"] == expected_cap, shot_meta
         img_blocks = [c for c in shot_res["content"] if c.get("type") == "image"]
         assert len(img_blocks) == 1, "Expected inline base64 PNG image block"
         raw_png = base64.b64decode(img_blocks[0]["data"])
@@ -599,11 +762,7 @@ def main() -> int:
             "cu_zoom",
             {
                 "observation_id": shot_meta["observationId"],
-                "x": 24,
-                "y": 24,
-                "width": 280,
-                "height": 160,
-                "upscale": 2,
+                "x": 24, "y": 24, "width": 280, "height": 160, "upscale": 2,
             },
         )
         assert not zoom_res["isError"], zoom_res
@@ -616,6 +775,8 @@ def main() -> int:
         results_summary["screenshotVerified"] = {
             "captureMethod": shot_meta["captureMethod"],
             "size": [shot_img.width, shot_img.height],
+            "scaleX": shot_meta["scaleX"],
+            "scaleY": shot_meta["scaleY"],
             "savedPath": str(LATEST_VERIFIED_PNG),
             "zoomSize": [zoom_img.width, zoom_img.height],
         }
@@ -629,7 +790,7 @@ def main() -> int:
         assert clip_long["isError"] is True
         assert "text_too_long" in clip_long["content"][0]["text"]
 
-        clip_payload = "Antigravity Clipboard Round-Trip ✓ — 64-bit CF_UNICODETEXT (2026)"
+        clip_payload = "Antigravity Clipboard Round-Trip ✓ — Cross-Platform Unicode (2026)"
         clip_write = client.call_tool("cu_clipboard_write", {"text": clip_payload})
         if clip_write["isError"] and server_mod._IS_LOW_INTEGRITY and "clipboard_set_failed" in clip_write["content"][0]["text"]:
             results_summary["clipboardRoundTripVerified"] = "low_integrity_sandbox_uipi_isolated"
@@ -643,7 +804,7 @@ def main() -> int:
             assert clip_read["structuredContent"]["text"] == clip_payload
             results_summary["clipboardRoundTripVerified"] = True
 
-        # 6b. Screen-border glow HUD overlay state & UpdateLayeredWindow self-test
+        # 6b. Screen-border glow HUD overlay state & native self-test
         ov_state_file = RUNTIME_ROOT / "overlay_state.json"
         assert ov_state_file.is_file(), "Expected overlay_state.json to be written during granted actions"
         ov_after_actions = json.loads(ov_state_file.read_text(encoding="utf-8"))
@@ -659,18 +820,29 @@ def main() -> int:
         assert ov_tool_res["structuredContent"]["cursorStyle"] == "sleek_dart"
         assert ov_tool_res["structuredContent"]["label"] == "E2E Overlay Verification"
 
-        hud_proc = subprocess.run(
-            [sys.executable, str(PLUGIN_DIR / "scripts" / "overlay_hud.py"), "--self-test"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=True,
-        )
-        hud_info = json.loads(hud_proc.stdout.strip())
-        assert hud_info.get("ok") is True and int(hud_info.get("hwnd", 0)) > 0, hud_info
+        if IS_WIN:
+            hud_proc = subprocess.run(
+                [sys.executable, str(PLUGIN_DIR / "scripts" / "overlay_hud.py"), "--self-test"],
+                capture_output=True, text=True, timeout=10, check=True,
+            )
+            hud_info = json.loads(hud_proc.stdout.strip())
+            assert hud_info.get("ok") is True and int(hud_info.get("hwnd", 0)) > 0, hud_info
+        else:
+            import macos_backend as mac_be
+            mac_be.configure(RUNTIME_ROOT, RUNTIME_ROOT / "overlay_pid.json")
+            hud_bin = mac_be.ensure_overlay_hud_binary()
+            assert hud_bin is not None and hud_bin.is_file(), "Failed to compile overlay_hud_mac.swift"
+            hud_proc = subprocess.run([str(hud_bin), "--self-test"], capture_output=True, text=True, timeout=10, check=True)
+            hud_info = json.loads(hud_proc.stdout.strip())
+            assert hud_info.get("ok") is True, hud_info
+            assert hud_info.get("sharingTypeNone") is True, hud_info
+            assert hud_info.get("clickThrough") is True, hud_info
+            assert hud_info.get("captionChecksPassed") is True, hud_info
+            assert abs(float(hud_info.get("shimmerCycleSec", 0)) - 2.15) < 0.01, hud_info
+            assert int(hud_info.get("shimmerFrames", 0)) == 28, hud_info
         results_summary["overlayHudVerified"] = hud_info
 
-        # 6c. v2.0 Speed & Efficiency Verification: warm cached UIA latency, cu_observe (WebP + SoM), and cu_batch
+        # 6c. Warm cached UI tree latency, cu_observe (WebP + SoM), and cu_batch
         t_uia0 = time.perf_counter()
         fast_tree = client.call_tool("cu_ui_tree", {"hwnd": target_hwnd})
         warm_uia_ms = round((time.perf_counter() - t_uia0) * 1000.0, 1)
@@ -700,7 +872,7 @@ def main() -> int:
         assert not batch_res["isError"], batch_res
         assert harness.snapshot()["ping_clicks"] >= 1
 
-        # 6d. v2.2 Fast local element matcher (`cu_choose` + `cu_step`) verification
+        # 6d. Fast local element matcher (`cu_choose` + `cu_step`)
         choose_res = client.call_tool(
             "cu_choose",
             {"goal": "Click Secondary Ping", "observation_id": obs_meta["observationId"]},
@@ -710,10 +882,7 @@ def main() -> int:
         assert choose_meta["act"] is True and choose_meta["elementIndex"] == ping_el["index"], choose_meta
 
         prev_pings = harness.snapshot()["ping_clicks"]
-        step_res = client.call_tool(
-            "cu_step",
-            {"hwnd": target_hwnd, "goal": "Click 'Secondary Ping'"},
-        )
+        step_res = client.call_tool("cu_step", {"hwnd": target_hwnd, "goal": "Click 'Secondary Ping'"})
         assert not step_res["isError"], step_res
         step_meta = step_res["structuredContent"]
         assert step_meta["status"] == "completed_steps", step_meta
@@ -722,7 +891,7 @@ def main() -> int:
             time.sleep(0.02)
         assert harness.snapshot()["ping_clicks"] >= prev_pings + 1
 
-        # 6e. v2.3.0 Role disambiguation + multi-window active_hwnd cu_batch chaining
+        # 6e. Role disambiguation + active_hwnd cu_batch chaining
         disambig_tab = client.call_tool(
             "cu_choose",
             {
@@ -769,7 +938,7 @@ def main() -> int:
             "cu_batch",
             {
                 "steps": [
-                    {"action": "wait_for_window", "title_contains": "Antigravity CUA Verification", "process_name": "python.exe", "timeout_sec": 3.0},
+                    {"action": "wait_for_window", "title_contains": "Antigravity CUA Verification", "process_name": harness_proc, "timeout_sec": 3.0},
                     {"action": "step", "goal": "Click 'Secondary Ping' -> 'Apply Action'"},
                     {"action": "observe", "format": "webp"},
                 ]
@@ -784,7 +953,7 @@ def main() -> int:
             time.sleep(0.02)
         assert harness.snapshot()["ping_clicks"] >= prev_pings2 + 1
 
-        # 6f. v2.4.0 Multi-goal decomposition + 45-button Calculator softmax calibration check
+        # 6f. Calculator softmax + multi-point smooth cu_drag + Paint matcher checks
         calc_elems = [
             {"index": i, "controlType": "Button", "name": nm, "automationId": aid, "enabled": True}
             for i, (nm, aid) in enumerate([
@@ -800,7 +969,6 @@ def main() -> int:
         assert not mul_res["isError"], mul_res
         assert mul_res["structuredContent"]["choice"] == "e10" and mul_res["structuredContent"]["confidence"] >= 0.95, mul_res
 
-        # 6g. v2.5.0 Multi-point polyline/Catmull-Rom cu_drag inside cu_batch + 89-element Win11 Paint matcher checks
         poly_batch = client.call_tool(
             "cu_batch",
             {
@@ -809,7 +977,7 @@ def main() -> int:
                     {
                         "action": "drag",
                         "coordinate_space": "window",
-                        "points": [[60, 220], [120, 190], [180, 220], [240, 195]],
+                        "points": [[60, 310], [160, 295], [260, 315], [360, 300]] if IS_MAC else [[60, 220], [120, 190], [180, 220], [240, 195]],
                         "smooth": True,
                         "closed": True,
                         "duration": 0.04,
@@ -834,18 +1002,13 @@ def main() -> int:
         paint_elems[74] = {"index": 74, "controlType": "ListItem", "name": "Yellow", "enabled": True}
         paint_elems[86] = {"index": 86, "controlType": "ListItem", "name": "Light turquoise", "enabled": True}
         for p_goal, exp_idx in [
-            ("Click Edit colors", 43),
-            ("Click Select tool", 25),
-            ("Click Gray", 70),
-            ("Click Yellow swatch", 74),
-            ("Click sky blue", 86),
-            ("Click Size slider", 13),
-            ("Click Size button", 40),
+            ("Click Edit colors", 43), ("Click Select tool", 25), ("Click Gray", 70),
+            ("Click Yellow swatch", 74), ("Click sky blue", 86),
+            ("Click Size slider", 13), ("Click Size button", 40),
         ]:
             pr = client.call_tool("cu_choose", {"goal": p_goal, "elements": paint_elems})
             assert not pr["isError"] and pr["structuredContent"]["elementIndex"] == exp_idx and pr["structuredContent"]["act"] is True and pr["structuredContent"]["confidence"] >= 0.85, (p_goal, pr)
 
-        # Tier-1 isolated zero-hardcode check: unrelated conceptual synonyms return unsure without LLM Tier-2
         import local_matcher as local_matcher_mod
         prev_matcher_env = os.environ.get("CUA_MATCHER_ENABLED")
         os.environ["CUA_MATCHER_ENABLED"] = "0"
@@ -859,7 +1022,6 @@ def main() -> int:
             else:
                 os.environ["CUA_MATCHER_ENABLED"] = prev_matcher_env
 
-        # Non-loopback CUA_MATCHER_ENDPOINT is rejected unless CUA_ALLOW_REMOTE_MATCHER is set
         prev_ep_env = os.environ.get("CUA_MATCHER_ENDPOINT")
         prev_remote_env = os.environ.get("CUA_ALLOW_REMOTE_MATCHER")
         os.environ["CUA_MATCHER_ENDPOINT"] = "http://example.com:11434"
@@ -874,11 +1036,17 @@ def main() -> int:
             if prev_remote_env is not None:
                 os.environ["CUA_ALLOW_REMOTE_MATCHER"] = prev_remote_env
 
-        # 6h. v3.0.0 streaming stage HUD + steps_file + modal-disabled deadlock (<1.5s) + zero-hardcode scan
+        # 6h. Streaming stage HUD + steps_file + modal non-deadlock (<1.5s)
         steps_file_path = RUNTIME_ROOT / "test_batch_chapter.json"
         steps_file_path.write_text(
             json.dumps([
-                {"action": "drag", "coordinate_space": "window", "points": [[70, 210], [140, 185], [210, 215]], "smooth": True, "duration": 0.03},
+                {
+                    "action": "drag",
+                    "coordinate_space": "window",
+                    "points": [[70, 305], [160, 295], [250, 315]] if IS_MAC else [[70, 210], [140, 185], [210, 215]],
+                    "smooth": True,
+                    "duration": 0.03,
+                },
                 {"action": "observe", "format": "webp", "annotate": False, "max_width": 640},
             ]),
             encoding="utf-8",
@@ -898,52 +1066,63 @@ def main() -> int:
         assert server_mod._HUD_IDLE_TIMEOUT_SEC == 600.0
         assert server_mod._GRANT_IDLE_TTL_SEC == 600.0
 
-        # Modal-disabled owner window must NOT hang PrintWindow or UIA
-        u32_modal = ctypes.WinDLL("user32", use_last_error=True)
-        u32_modal.EnableWindow.argtypes = [wintypes.HWND, wintypes.BOOL]
-        u32_modal.EnableWindow.restype = wintypes.BOOL
-        u32_modal.EnableWindow(wintypes.HWND(target_hwnd), False)
-        try:
-            t_modal0 = time.perf_counter()
-            modal_obs = client.call_tool("cu_observe", {"hwnd": target_hwnd, "format": "webp", "max_width": 640})
-            modal_dt = time.perf_counter() - t_modal0
-        finally:
-            u32_modal.EnableWindow(wintypes.HWND(target_hwnd), True)
+        # Modal sheet / modal-disabled owner window must NOT hang observe
+        if IS_WIN:
+            u32_modal = ctypes.WinDLL("user32", use_last_error=True)
+            u32_modal.EnableWindow.argtypes = [wintypes.HWND, wintypes.BOOL]
+            u32_modal.EnableWindow.restype = wintypes.BOOL
+            u32_modal.EnableWindow(wintypes.HWND(target_hwnd), False)
+            try:
+                t_modal0 = time.perf_counter()
+                modal_obs = client.call_tool("cu_observe", {"hwnd": target_hwnd, "format": "webp", "max_width": 640})
+                modal_dt = time.perf_counter() - t_modal0
+            finally:
+                u32_modal.EnableWindow(wintypes.HWND(target_hwnd), True)
+        else:
+            harness.set_modal(True)
+            try:
+                t_modal0 = time.perf_counter()
+                modal_obs = client.call_tool("cu_observe", {"hwnd": target_hwnd, "format": "webp", "max_width": 640})
+                modal_dt = time.perf_counter() - t_modal0
+            finally:
+                harness.set_modal(False)
         assert not modal_obs["isError"], modal_obs
-        assert modal_dt < 1.5, f"Modal-disabled window observe took {modal_dt:.2f}s (expected <1.5s)"
+        assert modal_dt < 1.5, f"Modal window observe took {modal_dt:.2f}s (expected <1.5s)"
 
-        assert server_mod._resolve_vk_token("+")[0] == 0xBB
+        # 6i. Production invariants: HUD caption/shimmer, Esc cancel, platform-specific checks, Unicode matcher, grant TTL
+        if IS_WIN:
+            assert server_mod._resolve_vk_token("+")[0] == 0xBB
+            import overlay_hud as hud_mod
+            assert hud_mod._format_pill_caption("Inspecting Discord.exe") == hud_mod.DEFAULT_PILL_CAPTION
+            assert hud_mod._format_pill_caption("UI Tree • notepad.exe") == hud_mod.DEFAULT_PILL_CAPTION
+            assert hud_mod._format_pill_caption("Invoke Button • HWND 12345") == hud_mod.DEFAULT_PILL_CAPTION
+            assert hud_mod._format_pill_caption("Active") == hud_mod.DEFAULT_PILL_CAPTION
+            assert hud_mod._format_pill_caption("3/5 Opening desktop app") == "Antigravity • 3/5 Opening desktop app"
+            assert hud_mod.THINKING_PILL_CAPTION == "Antigravity • Thinking..."
+            assert hud_mod.WAITING_PILL_CAPTION == "Antigravity • Waiting for model..."
+            assert hud_mod.WAITING_DELAY_SEC == 90.0
+            assert hud_mod.PILL_SHIMMER_CYCLE_SEC == 2.15
+            for cap in (
+                "Antigravity • 3/5 Opening desktop app",
+                hud_mod.THINKING_PILL_CAPTION,
+                hud_mod.WAITING_PILL_CAPTION,
+            ):
+                frames, _ = hud_mod.build_black_pill_frames(dpi_scale=1.0, num_frames=hud_mod.PILL_SHIMMER_FRAMES, caption=cap)
+                assert len(frames) == 28, len(frames)
 
-        # 6i. v3.1.0 production invariants: HUD caption/shimmer, security hardening, Unicode/boundary matcher, CLI pipe isolation, grant TTL
-        import overlay_hud as hud_mod
-
-        assert hud_mod._format_pill_caption("Inspecting Discord.exe") == hud_mod.DEFAULT_PILL_CAPTION
-        assert hud_mod._format_pill_caption("UI Tree • notepad.exe") == hud_mod.DEFAULT_PILL_CAPTION
-        assert hud_mod._format_pill_caption("Invoke Button • HWND 12345") == hud_mod.DEFAULT_PILL_CAPTION
-        assert hud_mod._format_pill_caption("Active") == hud_mod.DEFAULT_PILL_CAPTION
-        assert hud_mod._format_pill_caption("3/5 Opening desktop app") == "Antigravity • 3/5 Opening desktop app"
-        assert hud_mod.THINKING_PILL_CAPTION == "Antigravity • Thinking..."
-        assert hud_mod.WAITING_PILL_CAPTION == "Antigravity • Waiting for model..."
-        assert hud_mod.WAITING_DELAY_SEC == 90.0
-        assert hud_mod.PILL_SHIMMER_CYCLE_SEC == 2.15
-        stage_pill_frames, _ = hud_mod.build_black_pill_frames(
-            dpi_scale=1.0,
-            num_frames=hud_mod.PILL_SHIMMER_FRAMES,
-            caption="Antigravity • 3/5 Opening desktop app",
-        )
-        assert len(stage_pill_frames) == 28, len(stage_pill_frames)
-        thinking_pill_frames, _ = hud_mod.build_black_pill_frames(
-            dpi_scale=1.0,
-            num_frames=hud_mod.PILL_SHIMMER_FRAMES,
-            caption=hud_mod.THINKING_PILL_CAPTION,
-        )
-        assert len(thinking_pill_frames) == 28, len(thinking_pill_frames)
-        waiting_pill_frames, _ = hud_mod.build_black_pill_frames(
-            dpi_scale=1.0,
-            num_frames=hud_mod.PILL_SHIMMER_FRAMES,
-            caption=hud_mod.WAITING_PILL_CAPTION,
-        )
-        assert len(waiting_pill_frames) == 28, len(waiting_pill_frames)
+            windir_sys = Path(os.environ.get("WINDIR") or r"C:\Windows") / "System32"
+            if (windir_sys / "notepad.exe").is_file():
+                assert server_mod._get_pe_subsystem(windir_sys / "notepad.exe") == 2
+            if (windir_sys / "hostname.exe").is_file():
+                assert server_mod._get_pe_subsystem(windir_sys / "hostname.exe") == 3
+                cli_launch = client.call_tool(
+                    "cu_launch_app",
+                    {"app": str(windir_sys / "hostname.exe"), "auto_grant": False, "reuse_existing": False},
+                )
+                assert not cli_launch["isError"], cli_launch
+                post_cli_status = client.call_tool("cu_status")
+                assert not post_cli_status["isError"], post_cli_status
+                assert post_cli_status["structuredContent"]["serverVersion"] == "3.2.0"
 
         # Esc dismissal > 30s ago notifies model with user_closed_computer_use once, then allows clean restart
         pid_file_bak = server_mod.OVERLAY_PID_FILE.read_text(encoding="utf-8") if server_mod.OVERLAY_PID_FILE.is_file() else None
@@ -963,7 +1142,6 @@ def main() -> int:
             except RuntimeError as exc:
                 esc_raised = str(exc)
             assert "user_closed_computer_use" in esc_raised, f"Expected user_closed_computer_use, got {esc_raised!r}"
-            # Subsequent call (restart) must proceed cleanly without sticking
             server_mod.check_emergency_stop(check_corner=False)
         finally:
             server_mod._LAST_HANDLED_ESC_TS = old_esc_handled
@@ -973,34 +1151,7 @@ def main() -> int:
             else:
                 server_mod.OVERLAY_PID_FILE.unlink(missing_ok=True)
 
-        # Policy hardening: extensionless blocked names, UWP Terminal AUMID, regular .js editor allowed, schema updates
-        for no_ext_blk in ("powershell", "wsl", "cmd"):
-            blk_no_ext = client.call_tool("cu_grant_app", {"process_name": no_ext_blk})
-            assert blk_no_ext["isError"] is True and "policy_blocked" in blk_no_ext["content"][0]["text"], blk_no_ext
-        assert server_mod._is_blocked_launch_target(
-            "Terminal",
-            ["explorer.exe", "shell:AppsFolder\\Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"],
-        ) is not None
-        assert server_mod.check_sensitive_editor_title("code.exe", "index.js - Visual Studio Code") is None
-        assert by_name["cu_overlay"]["annotations"]["readOnlyHint"] is False
-        assert "horizontal" in by_name["cu_scroll"]["inputSchema"]["properties"]
-
-        # PE subsystem classifier & CLI stdout pipe isolation ('┌' crash regression guard)
-        windir_sys = Path(os.environ.get("WINDIR") or r"C:\Windows") / "System32"
-        if (windir_sys / "notepad.exe").is_file():
-            assert server_mod._get_pe_subsystem(windir_sys / "notepad.exe") == 2
-        if (windir_sys / "hostname.exe").is_file():
-            assert server_mod._get_pe_subsystem(windir_sys / "hostname.exe") == 3
-            cli_launch = client.call_tool(
-                "cu_launch_app",
-                {"app": str(windir_sys / "hostname.exe"), "auto_grant": False, "reuse_existing": False},
-            )
-            assert not cli_launch["isError"], cli_launch
-            post_cli_status = client.call_tool("cu_status")
-            assert not post_cli_status["isError"], post_cli_status
-            assert post_cli_status["structuredContent"]["serverVersion"] == "3.1.0"
-
-        # Unicode matching, strict numeric word boundary, and ISO date preservation in local_matcher.py
+        # Unicode matching, strict numeric word boundary, and ISO date preservation
         jp_res = local_matcher_mod.match_ui_element(
             "Click 保存",
             [
@@ -1019,7 +1170,7 @@ def main() -> int:
         assert bound_res["choice"] == "e1", bound_res
         assert local_matcher_mod.decompose_goal_steps("Select 2026-11-25")[0] == ["Select 2026-11-25"]
 
-        # Grant TTL auto-expiry unit verification (isolated without mutating active stdio server grants)
+        # Grant TTL auto-expiry unit check
         old_grants_backup = dict(server_mod.STATE.get("grants") or {})
         try:
             server_mod.STATE["grants"] = {
@@ -1036,9 +1187,10 @@ def main() -> int:
         finally:
             server_mod.STATE["grants"] = old_grants_backup
 
-        # Static privacy & dependency hygiene: zero hardcoded user paths, zero unexpected script imports
-        user_path_re = re.compile(r"[a-zA-Z]:\\{1,2}Users\\{1,2}[A-Za-z0-9_ ]+", re.I)
-        scan_exts = {".py", ".cs", ".ps1", ".cmd", ".json", ".md", ".txt", ".svg"}
+        # Static privacy & dependency hygiene: zero hardcoded user paths (Win & macOS), zero unexpected script imports
+        win_user_path_re = re.compile(r"[a-zA-Z]:\\{1,2}Users\\{1,2}[A-Za-z0-9_ ]+", re.I)
+        mac_user_path_re = re.compile(r"/Users/(?!Shared\b)[A-Za-z0-9._-]+")
+        scan_exts = {".py", ".cs", ".ps1", ".cmd", ".swift", ".sh", ".json", ".md", ".txt", ".svg"}
         for rel_target in ("scripts", "skills", "mcp_config.json", "plugin.json", "README.md", "ARCHITECTURE.md", "SECURITY.md", "tests"):
             p_t = PLUGIN_DIR / rel_target
             if not p_t.exists():
@@ -1046,22 +1198,27 @@ def main() -> int:
             files = [p_t] if p_t.is_file() else [
                 x for x in p_t.rglob("*")
                 if x.is_file()
-                and x.suffix.lower() in scan_exts
+                and (x.suffix.lower() in scan_exts or x.name == "launch_mcp")
                 and ".runtime" not in x.parts
                 and "__pycache__" not in x.parts
+                and "bin" not in x.parts
             ]
             for fp in files:
                 body = fp.read_text(encoding="utf-8", errors="ignore")
-                m_path = user_path_re.search(body)
-                assert m_path is None, f"Hardcoded local Windows user path {m_path.group(0)!r} found in {fp}"
+                m_win = win_user_path_re.search(body)
+                assert m_win is None, f"Hardcoded local Windows user path {m_win.group(0)!r} found in {fp}"
+                m_mac = mac_user_path_re.search(body)
+                assert m_mac is None, f"Hardcoded local macOS user path {m_mac.group(0)!r} found in {fp}"
 
-        allowed_script_imports = sys.stdlib_module_names | {
+        allowed_script_imports = _get_stdlib_module_names() | {
             "PIL",
             "numpy",
             "antigravity_brand",
             "local_matcher",
             "overlay_hud",
             "computer_use_server",
+            "win32_backend",
+            "macos_backend",
         }
         for py_fp in sorted((PLUGIN_DIR / "scripts").glob("*.py")):
             tree = ast.parse(py_fp.read_text(encoding="utf-8"), filename=str(py_fp))
@@ -1076,10 +1233,10 @@ def main() -> int:
 
         results_summary["v3ModalDeadlockSec"] = round(modal_dt, 3)
         results_summary["v3ZeroHardcodeVerified"] = True
-        results_summary["v31ProductionInvariantsVerified"] = True
+        results_summary["v32CrossPlatformInvariantsVerified"] = True
 
         results_summary["v2SpeedBenchmarks"] = {
-            "warmUiaTreeMs": warm_uia_ms,
+            "warmUiTreeMs": warm_uia_ms,
             "hybridObserveWebpSomMs": obs_ms,
             "localMatcherChooseMs": choose_meta["elapsedMs"],
             "localMatcherStepMs": step_meta["elapsedMs"],
@@ -1090,7 +1247,6 @@ def main() -> int:
         }
 
     finally:
-        # 7. Always revoke all session grants so session_state.json is left clean
         try:
             revoke_res = client.call_tool("cu_revoke_app", {"all": True})
             assert not revoke_res["isError"], revoke_res

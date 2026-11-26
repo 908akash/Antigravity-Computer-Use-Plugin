@@ -1,39 +1,60 @@
-# Antigravity Computer Use Plugin (`v3.1.0`)
+# Antigravity Computer Use Plugin (`v3.2.0`)
 
-Antigravity Computer Use Plugin is an open source Windows 10 (build 19041 or newer) and Windows 11 desktop automation plugin and MCP server (`computer-use` and `computer-use-win32`).
+Antigravity Computer Use Plugin is an open-source **macOS and Windows 10/11** desktop automation plugin and MCP server (`computer-use`).
 
-It talks straight to Win32 and Windows UI Automation through Python `ctypes` with no hardcoded app lists and no external pointer wrappers. Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the internals and [`skills/computer-use/SKILL.md`](./skills/computer-use/SKILL.md) for the agent workflow runbook along with [SECURITY.md](./SECURITY.md) for the security model.
+One single repository and one single release archive (`computer-use-v3.2.0.zip`) work natively on both **macOS** (compiled Swift `AXUIElement`, CoreGraphics `CGEvent`, Retina-calibrated `screencapture`, and click-through AppKit HUD) and **Windows 10/11** (pure Win32 `ctypes`, `PrintWindow`, `SendInput`, and Windows UI Automation) with zero third-party OS wrappers and no hardcoded app lists.
+
+Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the internals, [`skills/computer-use/SKILL.md`](./skills/computer-use/SKILL.md) for the agent workflow runbook, and [SECURITY.md](./SECURITY.md) for the security model.
 
 ---
 
 ## Install in Antigravity
 
-### One prompt install
+### One-prompt install (macOS & Windows)
 
-Copy and paste this prompt straight into Antigravity to install and verify the plugin automatically:
+Copy and paste the matching prompt straight into Antigravity to install and verify the plugin automatically:
 
+**macOS:**
 ```text
-Download and install the Windows Computer Use plugin from https://github.com/908akash/Antigravity-Computer-Use-Plugin/releases/latest/download/computer-use-v3.1.0.zip into %USERPROFILE%\.gemini\config\plugins\computer-use then run scripts\launch_mcp.cmd --self-test so its Python packages are ready and share the customization link so I can enable it.
+Download and install the Computer Use plugin from https://github.com/908akash/Antigravity-Computer-Use-Plugin/releases/latest/download/computer-use-v3.2.0.zip into ~/.gemini/config/plugins/computer-use then run scripts/launch_mcp --self-test so its Python packages and Swift helpers are ready and share the customization link so I can enable it.
 ```
 
-After you send that prompt Antigravity handles the setup in three quick steps:
+**Windows:**
+```text
+Download and install the Computer Use plugin from https://github.com/908akash/Antigravity-Computer-Use-Plugin/releases/latest/download/computer-use-v3.2.0.zip into %USERPROFILE%\.gemini\config\plugins\computer-use then run scripts\launch_mcp.cmd --self-test so its Python packages are ready and share the customization link so I can enable it.
+```
 
-1. Antigravity downloads `computer-use-v3.1.0.zip` and extracts the `computer-use` folder into `%USERPROFILE%\.gemini\config\plugins\computer-use`.
-2. Next it runs `scripts\launch_mcp.cmd --self-test` to find Python 3.10 or newer and install `pillow` and `numpy` into the local plugin runtime folder if those packages are missing.
-3. Then Antigravity gives you the `[Windows Computer Use](customization://computer-use)` toggle link so you can turn the plugin on and refresh MCP servers.
+After setup, Antigravity gives you the `[Computer Use](customization://computer-use)` toggle link so you can turn the plugin on and refresh MCP servers.
 
-### One line PowerShell install
+### macOS permissions (one-time setup)
 
-You can also download and verify the release archive straight from PowerShell:
+On macOS, grant **Antigravity** two standard Privacy & Security permissions in **System Settings > Privacy & Security**:
+1. **Accessibility** — enables native `AXUIElement` tree inspection and 120Hz `CGEvent` mouse/keyboard control.
+2. **Screen & System Audio Recording** — enables shadow-free Retina window screenshots and `cu_observe`.
 
+Run `cu_status` at any time to verify `accessibilityTrusted: true` and `screenRecordingGranted: true`. The plugin runs with stock macOS Apple Command Line Tools (`/usr/bin/python3` 3.9.6 + `xcrun swiftc`) and does **not** require Homebrew.
+
+### One-line CLI install
+
+**macOS (Terminal / zsh):**
+```sh
+curl -fsSL "https://github.com/908akash/Antigravity-Computer-Use-Plugin/releases/latest/download/computer-use-v3.2.0.zip" -o /tmp/computer-use-v3.2.0.zip && mkdir -p "$HOME/.gemini/config/plugins" && unzip -oq /tmp/computer-use-v3.2.0.zip -d "$HOME/.gemini/config/plugins" && "$HOME/.gemini/config/plugins/computer-use/scripts/launch_mcp" --self-test
+```
+
+**Windows (PowerShell):**
 ```powershell
-$zip = "$env:TEMP\computer-use-v3.1.0.zip"; Invoke-WebRequest "https://github.com/908akash/Antigravity-Computer-Use-Plugin/releases/latest/download/computer-use-v3.1.0.zip" -OutFile $zip; Expand-Archive -Path $zip -DestinationPath "$env:USERPROFILE\.gemini\config\plugins" -Force; & "$env:USERPROFILE\.gemini\config\plugins\computer-use\scripts\launch_mcp.cmd" --self-test
+$zip = "$env:TEMP\computer-use-v3.2.0.zip"; Invoke-WebRequest "https://github.com/908akash/Antigravity-Computer-Use-Plugin/releases/latest/download/computer-use-v3.2.0.zip" -OutFile $zip; Expand-Archive -Path $zip -DestinationPath "$env:USERPROFILE\.gemini\config\plugins" -Force; & "$env:USERPROFILE\.gemini\config\plugins\computer-use\scripts\launch_mcp.cmd" --self-test
 ```
 
 ### Install with git clone
 
-If you prefer git you can clone the repository into your plugins folder and run the self test script:
+**macOS:**
+```sh
+git clone https://github.com/908akash/Antigravity-Computer-Use-Plugin.git "$HOME/.gemini/config/plugins/computer-use"
+"$HOME/.gemini/config/plugins/computer-use/scripts/launch_mcp" --self-test
+```
 
+**Windows:**
 ```powershell
 git clone https://github.com/908akash/Antigravity-Computer-Use-Plugin.git "$env:USERPROFILE\.gemini\config\plugins\computer-use"
 & "$env:USERPROFILE\.gemini\config\plugins\computer-use\scripts\launch_mcp.cmd" --self-test
@@ -41,12 +62,30 @@ git clone https://github.com/908akash/Antigravity-Computer-Use-Plugin.git "$env:
 
 ### Standalone MCP clients
 
-Claude Desktop and Cursor and VS Code can run the server directly by pointing at `scripts\launch_mcp.cmd` with an explicit folder path in `cwd`:
+Claude Desktop, Cursor, and VS Code can run the server directly using explicit folder paths in `cwd`:
 
+**macOS:**
 ```json
 {
   "mcpServers": {
-    "computer-use-win32": {
+    "computer-use": {
+      "command": "/path/to/computer-use/scripts/launch_mcp",
+      "args": [],
+      "cwd": "/path/to/computer-use",
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}
+```
+
+**Windows:**
+```json
+{
+  "mcpServers": {
+    "computer-use": {
       "command": "cmd.exe",
       "args": ["/d", "/c", "scripts\\launch_mcp.cmd"],
       "cwd": "C:\\path\\to\\computer-use",
@@ -59,58 +98,52 @@ Claude Desktop and Cursor and VS Code can run the server directly by pointing at
 }
 ```
 
-Replace `C:\\path\\to\\computer-use` with the real folder path on your PC. Do not copy `${PLUGIN_ROOT}` or `${PLUGIN_DATA}` placeholders from Antigravity's `mcp_config.json` into standalone clients because standalone MCP hosts do not expand Antigravity plugin variables.
+Do not copy `${PLUGIN_ROOT}` or `${PLUGIN_DATA}` placeholders from Antigravity's `mcp_config.json` into standalone MCP clients.
 
 ---
 
-## How it works on your PC
+## How it works on macOS and Windows
 
-### Standard user privileges and Win32 capture
+### Native OS backends with zero wrapper bloat
 
-The server runs only at your standard user privilege level (medium integrity). It never raises a UAC prompt and refuses elevated Administrator windows through Windows UIPI checks.
+- **macOS (`scripts/macos_backend.py` + Swift helpers)**:
+  - On first run compiles `scripts/macos_ax_bridge.swift` and `scripts/overlay_hud_mac.swift` locally via `xcrun swiftc -O` into `$CUA_RUNTIME_DIR/bin/` keyed by `SHA-256` (with `osascript` JXA fallback if Command Line Tools are missing).
+  - Shadow-free Retina window capture uses `/usr/sbin/screencapture -x -o -l <CGWindowID>` while automatically scaling 2x Retina image pixels back to exact 1x Quartz logical points (`scaleX` / `scaleY`) for `cu_click`, `cu_drag`, `cu_zoom`, and Set-of-Mark overlays.
+  - Pointer motion, Catmull-Rom curves, drags, scrolls, Unicode text, and `Cmd` shortcuts run at 120Hz via CoreGraphics `CGEvent` inside the persistent Swift bridge.
+  - App discovery scans `/Applications`, `~/Applications`, `/System/Applications`, and Spotlight (`mdfind`) and launches detached via `open -a`.
+  - Same-PID context menus, `NSPopUpButton` dropdowns, and sheets are preserved on clicks without re-activating the parent window.
+- **Windows 10/11 (`scripts/win32_backend.py` + C# / PowerShell UIA)**:
+  - Talks straight to Win32 `ctypes` with Per-Monitor DPI v2 awareness, background GDI `PrintWindow` capture, 120Hz `SendInput`, dynamic Registry/WindowsApps/StartApps discovery with PE subsystem classification, and SHA-256 verified `uia_fast_bridge.cs` (with `uia_daemon.ps1` fallback).
 
-Screen capture uses pure Win32 `ctypes` GDI `PrintWindow` in the background and falls back to clipped GDI `BitBlt` desktop capture when needed. Pointer paths use 120Hz hardware `SendInput` curves across the virtual desktop with Per Monitor DPI v2 awareness on mixed DPI multi monitor displays. Open context menus and dropdown popups are detected automatically so screenshots include the popup and clicks inside the menu do not dismiss it.
+### Three-stage status pill and live HUD
 
-On first run the server compiles `scripts\uia_fast_bridge.cs` locally using the built in Windows `.NET Framework 4.x` `csc.exe` compiler and checks the binary with a `SHA-256` hash before running it. If compilation is unavailable it falls back automatically to `scripts\uia_daemon.ps1` over PowerShell UI Automation.
+While any app grant is active, the click-through HUD (`overlay_hud_mac` on macOS using `NSWindow.sharingType = .none`; `overlay_hud.py` on Windows using `WDA_EXCLUDEFROMCAPTURE`) displays a frosty screen-border glow, click ripples, and a pitch-black top status pill with the official 4-color Antigravity mark:
 
-Installed desktop apps are resolved dynamically through Windows Registry `App Paths` and `Uninstall` entries along with `WindowsApps` and Start Menu `Get-StartApps` and `PATH` with a PE header subsystem check so GUI desktop apps beat CLI tools of the same name.
+- During tool execution and for the first `1.6s` after a tool finishes, the pill shows `Antigravity is using your computer` or clean stage steps like `3/5 Opening desktop app` with a frosted `N/M` step badge (never leaking `.app`/`.exe` filenames, paths, or window IDs).
+- After `1.6s` idle it switches to `Antigravity • Thinking...` for up to `90s`.
+- After `90s` idle it switches to `Antigravity • Waiting for model...` up to the `600s` safety timeout.
+- The pill shimmer runs on a constant `2.15s` cycle (`28` logical frames) regardless of tool latency.
+- Pressing physical `Esc` at any moment closes the HUD immediately and revokes all active grants (`user_closed_computer_use` on the model's next tool call). On macOS, `overlay_hud_mac.swift` pairs global `NSEvent` keyDown monitoring with 60Hz `CGEventSource.keyState(.combinedSessionState, key: 53)` polling so physical `Esc` never misses even during active drags or open menus.
+- Moving the pointer to the upper-left `(0, 0)` corner of any display also triggers `emergency_stop`.
 
-### Three stage status pill and hardware cursor
+### Built-in fast local UI matcher
 
-While any app grant is active `scripts\overlay_hud.py` shows a click through top pill and a frosty screen border glow along with a native hardware cursor through `SetSystemCursor`. Every overlay surface uses `WDA_EXCLUDEFROMCAPTURE` so captured screenshots stay clean while you always see when automation is active.
-
-- During tool execution and for the first `1.6` seconds after a tool finishes the top pill displays `Antigravity is using your computer` or clean stage steps like `3/5 Opening desktop app` with raw `.exe` names and window handles stripped out.
-- After `1.6` seconds of idle time the pill switches to `Antigravity • Thinking...` for up to `90` seconds while the model plans its next turn.
-- After `90` seconds of idle time the pill switches to `Antigravity • Waiting for model...` up to the `600` second safety timeout so slow reasoning or script generation never makes the overlay disappear early.
-- Pressing `Esc` at any moment closes the overlay right away and restores your normal Windows cursor through `SPI_SETCURSORS` and revokes every active app grant. On the model's next tool call the server returns `user_closed_computer_use` so the agent stops cleanly and can restart later when authorized.
-- Moving your pointer to the top left `(0, 0)` corner of any monitor also triggers an immediate emergency stop.
-
-### Built in fast local UI matcher
-
-The plugin ships with a built in local UI grounding engine at `scripts\local_matcher.py` that powers `cu_choose` and `cu_step` out of the box with zero external model downloads required.
-
-- Tier 1 runs in under one millisecond using pure Python standard library code across up to 120 UI Automation controls with zero extra screenshot overhead. It combines Unicode NFKD folding with CJK and multilingual script tokenization along with `camelCase` and `snake_case` identifier splitting and suffix stemming and Jaro Winkler similarity and W3C CSS3 perceptual color matching and UI control role weighting to return a calibrated confidence choice (`e<index>` or `done` or `unsure`).
-- `cu_step` also splits compound instructions like `"Click Settings -> Connections -> Enable Sync"` or calculator expressions into sequential actions and checks expected final UI text in a single MCP turn.
-- Tier 2 is an optional local LLM fallback for ambiguous labels. If you run Ollama or LM Studio or Jan or `llama-server` on your own PC (`127.0.0.1` ports `11434` and `1234` and `1337`) you can set `CUA_MATCHER_AUTO_DISCOVER=1` or `CUA_MATCHER_ENDPOINT` to let `local_matcher.py` resolve low confidence controls through grammar constrained single token inference on `localhost`.
+`scripts/local_matcher.py` is 100% OS-independent pure Python stdlib and powers `cu_choose` and `cu_step` in under `1ms` across both macOS `AXUIElement` (normalized to canonical `Button`, `Edit`, `ComboBox`, `CheckBox`, `RadioButton`, `MenuItem`, `TabItem`, `Hyperlink`, `Slider`, `Text` roles) and Windows UI Automation trees, with opt-in local LLM Tier 2 fallback (`CUA_MATCHER_ENDPOINT` / `CUA_MATCHER_AUTO_DISCOVER=1`, loopback-only by default).
 
 ### Six layers of safety
 
-- Every inspected or controlled window needs an explicit expiring session grant from `cu_grant_app` or `cu_launch_app`.
-- Mandatory deny lists block terminals and shells and password managers and UAC or admin tools and AI agent hosts along with `Win` key chords and `ctrl+shift+esc` and `ctrl+esc` and dangerous launch arguments like passing `cmd.exe` to `explorer.exe`.
-- Web browsers start in `look_only` read only mode unless you explicitly approve interactive input with `allow_browser_input`.
-- Sensitive editor protection blocks typing into editors open to shell profiles or SSH keys or `.git/hooks` or MCP configs or executable script extensions such as `.ps1` and `.bat` and `.cmd` but allows ordinary source files like `.js` or `.py`.
-- Input calls verify that the desktop is unlocked and block elevated UIPI targets and reject occluded points and abort typing if foreground focus changes.
-- Physical `Esc` or moving the pointer to `(0, 0)` on any display stops automation immediately and revokes all grants.
+1. **Expiring session grants**: every controlled window needs an active grant (`CUA_GRANT_TTL_SEC=600`) and `cu_zoom` requires a granted window or `allow_full_desktop=true`.
+2. **Mandatory deny lists**: blocks terminals/shells, password managers, OS security prompts (`SecurityAgent`, `CoreServicesUIAgent`, Touch ID/UAC, macOS `System Settings` security panes), admin monitors, and AI agent hosts (`Antigravity`, `Cursor`, `Claude`, `Codex`), plus dangerous OS chords (`cmd+space`, `cmd+opt+esc`, `cmd+ctrl+q`, `Win` chords, `ctrl+shift+esc`, `ctrl+esc`).
+3. **Browser `look_only` default**: `Safari`, `Arc`, `Google Chrome`, `Brave Browser`, `Firefox`, and `Microsoft Edge` default to read-only inspection unless `allow_browser_input=true`.
+4. **Sensitive editor guard + password redaction**: blocks typing into editors open to `.env`, SSH keys, `.bashrc`, `.zshrc`, `.zprofile`, `.git/hooks`, MCP configs, or executable scripts (`.sh`, `.zsh`, `.ps1`, `.bat`, `.cmd`) while allowing `.py`, `.js`, and `.ts`. Password fields (`AXSecureTextField` on macOS, `IsPasswordProperty` on Windows) are redacted inside the native bridges before data reaches Python.
+5. **Desktop & focus guards**: verifies the desktop is unlocked, blocks elevated/root/admin targets, rejects occluded points, and aborts typing on foreground focus change.
+6. **Physical emergency stops**: instant physical `Esc` cancel (`user_closed_computer_use`) and `(0, 0)` corner failsafe (`emergency_stop`).
 
 ---
 
 ## Privacy and zero telemetry
 
-This plugin contains zero telemetry and zero analytics and zero tracking beacons and zero background data harvesting.
-
-Screenshots and UI observations stay inside the local runtime folder and are wiped automatically when `cu_revoke_app({"all": true})` runs or when the MCP server exits. Password inputs (`IsPasswordProperty`) are redacted inside both UI Automation bridges before any data reaches Python.
-
-The only network traffic the plugin can ever make is downloading `pillow` and `numpy` from PyPI on first run when those packages are missing from Python or talking to a local inference server (`127.0.0.1` ports `11434` and `1234` and `1337`) only if you opt in via `CUA_MATCHER_ENDPOINT` or `CUA_MATCHER_AUTO_DISCOVER=1`. Non loopback endpoints are rejected unless you explicitly set `CUA_ALLOW_REMOTE_MATCHER=1`.
+Zero telemetry, zero analytics, and zero background network beacons. Screenshots and observations stay inside the local runtime folder and are purged on `cu_revoke_app({"all": true})` and server exit. The only network traffic is installing `pillow` and `numpy` from PyPI on first run if missing, or contacting a local inference server (`127.0.0.1`) only when explicitly enabled.
 
 ---
 
@@ -118,20 +151,20 @@ The only network traffic the plugin can ever make is downloading `pillow` and `n
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `CUA_THINKING_WAIT_SEC` | `90` | Idle seconds before `Thinking...` switches to `Waiting for model...` (clamped `10` to `300`) |
-| `CUA_HUD_IDLE_TIMEOUT_SEC` | `600` | Idle seconds before the status pill closes automatically (clamped `30` to `1800`) |
-| `CUA_GRANT_TTL_SEC` | `600` | Inactivity seconds before unused app grants expire (clamped `30` to `1800`) |
+| `CUA_THINKING_WAIT_SEC` | `90` | Idle seconds before `Thinking...` switches to `Waiting for model...` (`10`..`300`) |
+| `CUA_HUD_IDLE_TIMEOUT_SEC` | `600` | Idle seconds before the status pill closes automatically (`30`..`1800`) |
+| `CUA_GRANT_TTL_SEC` | `600` | Inactivity seconds before unused app grants expire (`30`..`1800`) |
 | `CUA_HUD_BRAND` | `Antigravity` | Brand prefix displayed inside the status pill |
-| `CUA_HUD_HUMAN_TAKEOVER` | `0` | Set to `1` to close the overlay on physical mouse motion or keypress while idle |
-| `CUA_RUNTIME_DIR` | `.runtime` | Overrides temporary runtime folder path (falls back to `%LOCALAPPDATA%\computer-use-win32` if read only) |
-| `CUA_PYTHON` | empty | Explicit path to a Python 3.10 or newer `python.exe` interpreter |
+| `CUA_HUD_HUMAN_TAKEOVER` | `0` | Set to `1` to close the overlay on physical mouse motion while idle (off by default) |
+| `CUA_RUNTIME_DIR` | `.runtime` | Runtime folder override (falls back to `~/Library/Application Support/antigravity-computer-use` on macOS or `%LOCALAPPDATA%\computer-use-win32` on Windows) |
+| `CUA_PYTHON` | empty | Explicit path to a Python 3.9+ (macOS) or 3.10+ (Windows) interpreter |
 | `CUA_MATCHER_ENABLED` | `1` | Set to `0` to keep `cu_choose` and `cu_step` on Tier 1 local scoring only |
-| `CUA_MATCHER_ENDPOINT` | empty | Optional inference URL for Tier 2 fallback (non loopback URLs require `CUA_ALLOW_REMOTE_MATCHER=1`) |
-| `CUA_MATCHER_AUTO_DISCOVER` | `0` | Set to `1` to probe local inference ports `11434` and `1234` and `1337` |
+| `CUA_MATCHER_ENDPOINT` | empty | Optional inference URL for Tier 2 fallback (non-loopback requires `CUA_ALLOW_REMOTE_MATCHER=1`) |
+| `CUA_MATCHER_AUTO_DISCOVER` | `0` | Set to `1` to probe local inference ports `11434`, `1234`, and `1337` |
 | `CUA_MATCHER_MODEL` | `local-matcher` | Model name sent to an explicit Tier 2 endpoint |
 | `CUA_MATCHER_API_KEY` | empty | Optional bearer token for an explicit Tier 2 endpoint |
 | `CUA_MATCHER_API_KIND` | `openai` | Tier 2 API format (`openai` or `completion`) |
-| `CUA_ALLOW_REMOTE_MATCHER` | `0` | Set to `1` to allow non loopback URLs in `CUA_MATCHER_ENDPOINT` |
+| `CUA_ALLOW_REMOTE_MATCHER` | `0` | Set to `1` to allow non-loopback URLs in `CUA_MATCHER_ENDPOINT` |
 
 ---
 
@@ -146,15 +179,21 @@ All 25 tools below can be called directly or chained inside `cu_batch` (up to 80
 | Screen and UI inspection | `cu_observe` `cu_screenshot` `cu_zoom` `cu_ui_tree` |
 | Focus and element actions | `cu_focus_window` `cu_click_element` `cu_set_value` `cu_batch` |
 | Mouse and scroll gestures | `cu_click` `cu_move` `cu_drag` `cu_scroll` |
-| Keyboard and clipboard and HUD | `cu_type` `cu_key` `cu_clipboard_read` `cu_clipboard_write` `cu_overlay` |
+| Keyboard, clipboard, and HUD | `cu_type` `cu_key` `cu_clipboard_read` `cu_clipboard_write` `cu_overlay` |
 | Fast local matching | `cu_choose` `cu_step` |
 
 ---
 
 ## Running tests
 
-Verify the launcher and full end to end MCP suite against an isolated runtime folder:
+**macOS:**
+```sh
+export CUA_RUNTIME_DIR="/tmp/cua-test-rt"
+./scripts/launch_mcp --self-test
+CUA_PYLIBS_DIR="$CUA_RUNTIME_DIR/pylibs_cp$(python3 -c 'import sys;print(f"{sys.version_info[0]}{sys.version_info[1]}")')" python3 tests/test_computer_use.py
+```
 
+**Windows:**
 ```powershell
 $env:CUA_RUNTIME_DIR = "$env:TEMP\cua-test-rt"
 scripts\launch_mcp.cmd --self-test
@@ -165,7 +204,7 @@ python tests\test_computer_use.py
 
 ## Feedback and support
 
-If something breaks on your PC or feels rough or you have ideas and concerns while using the plugin send a direct message to [@908Akash on X](https://x.com/908Akash).
+If something breaks on your Mac or PC or feels rough while using the plugin, send a direct message to [@908Akash on X](https://x.com/908Akash).
 
 ---
 
@@ -188,13 +227,19 @@ computer-use/
 │   └── computer-use/
 │       └── SKILL.md
 ├── scripts/
+│   ├── launch_mcp
 │   ├── launch_mcp.cmd
 │   ├── computer_use_server.py
-│   ├── local_matcher.py
+│   ├── macos_backend.py
+│   ├── macos_ax_bridge.swift
+│   ├── overlay_hud_mac.swift
+│   ├── win32_backend.py
 │   ├── overlay_hud.py
-│   ├── antigravity_brand.py
 │   ├── uia_fast_bridge.cs
-│   └── uia_daemon.ps1
+│   ├── uia_daemon.ps1
+│   ├── local_matcher.py
+│   └── antigravity_brand.py
 └── tests/
-    └── test_computer_use.py
+    ├── test_computer_use.py
+    └── macos_test_harness.swift
 ```
