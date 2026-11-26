@@ -25,13 +25,15 @@ clean_env_dir() {
     esac
 }
 
+_TMP_RUNTIME_FALLBACK="${TMPDIR:-/tmp}/antigravity-computer-use-$(id -u 2>/dev/null || echo user)"
+
 RUNTIME_ROOT=""
 for _cand in \
     "$(clean_env_dir "${CUA_RUNTIME_DIR:-}")" \
     "$(clean_env_dir "${PLUGIN_DATA:-}")" \
     "$PLUGIN_ROOT/.runtime" \
     "$HOME/Library/Application Support/antigravity-computer-use" \
-    "${TMPDIR:-/tmp}/antigravity-computer-use"
+    "$_TMP_RUNTIME_FALLBACK"
 do
     [ -n "$_cand" ] || continue
     if dir_is_writable "$_cand"; then
@@ -41,8 +43,11 @@ do
 done
 
 if [ -z "$RUNTIME_ROOT" ]; then
-    RUNTIME_ROOT="${TMPDIR:-/tmp}/antigravity-computer-use"
+    RUNTIME_ROOT="$_TMP_RUNTIME_FALLBACK"
     mkdir -p "$RUNTIME_ROOT" 2>/dev/null || true
+fi
+if [ "$RUNTIME_ROOT" = "$_TMP_RUNTIME_FALLBACK" ]; then
+    chmod 700 "$RUNTIME_ROOT" 2>/dev/null || true
 fi
 
 export CUA_RUNTIME_DIR="$RUNTIME_ROOT"
@@ -98,7 +103,7 @@ if [ -n "${CUA_PYTHON:-}" ]; then
     probe_python "$CUA_PYTHON"
 fi
 
-if [ -z "$PYTHON_EXE" ]; then
+if [ -z "$PYTHON_EXE" ] && [ -z "$FALLBACK_PY" ]; then
     for _cmd in python3 python3.13 python3.12 python3.11 python3.10 python3.9; do
         _hit=$(command -v "$_cmd" 2>/dev/null || true)
         [ -n "$_hit" ] && probe_python "$_hit"
@@ -106,7 +111,7 @@ if [ -z "$PYTHON_EXE" ]; then
     done
 fi
 
-if [ -z "$PYTHON_EXE" ]; then
+if [ -z "$PYTHON_EXE" ] && [ -z "$FALLBACK_PY" ]; then
     for _cand in \
         "/opt/homebrew/bin/python3" \
         "/usr/local/bin/python3" \

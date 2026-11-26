@@ -176,6 +176,13 @@ private func axCopyAttr(_ el: AXUIElement, _ attr: String) -> AnyObject? {
     return v
 }
 
+private func asAXElement(_ ref: AnyObject?) -> AXUIElement? {
+    guard let obj = ref, CFGetTypeID(obj) == AXUIElementGetTypeID() else {
+        return nil
+    }
+    return (obj as! AXUIElement)
+}
+
 private func axString(_ el: AXUIElement, _ attr: String) -> String {
     guard let v = axCopyAttr(el, attr) else { return "" }
     if let s = v as? String { return s }
@@ -605,16 +612,16 @@ private func findAXWindow(pid: pid_t, hwnd: Int, targetRect: CGRect?) -> AXUIEle
                 return b
             }
         }
-        if let focused = axCopyAttr(appEl, kAXFocusedWindowAttribute as String) {
-            return (focused as! AXUIElement)
+        if let focused = asAXElement(axCopyAttr(appEl, kAXFocusedWindowAttribute as String)) {
+            return focused
         }
-        if let mainW = axCopyAttr(appEl, kAXMainWindowAttribute as String) {
-            return (mainW as! AXUIElement)
+        if let mainW = asAXElement(axCopyAttr(appEl, kAXMainWindowAttribute as String)) {
+            return mainW
         }
         return wins.first
     }
-    if let focused = axCopyAttr(appEl, kAXFocusedWindowAttribute as String) {
-        return (focused as! AXUIElement)
+    if let focused = asAXElement(axCopyAttr(appEl, kAXFocusedWindowAttribute as String)) {
+        return focused
     }
     return nil
 }
@@ -765,11 +772,10 @@ private func queryUITree(hwnd: Int, maxElements: Int, setValueIndex: Int, valueT
     var rootEl: AXUIElement?
     if layer > 0 {
         // Active popup / menu window: try focused UI element's menu container first, then open menu bar / app AXMenu matching popup rect
-        if let focusedObj = axCopyAttr(appEl, kAXFocusedUIElementAttribute as String) {
-            let fEl = focusedObj as! AXUIElement
+        if let fEl = asAXElement(axCopyAttr(appEl, kAXFocusedUIElementAttribute as String)) {
             let fRole = axString(fEl, kAXRoleAttribute as String)
             if fRole == "AXMenu" || fRole == "AXMenuItem" {
-                rootEl = fRole == "AXMenu" ? fEl : (axCopyAttr(fEl, kAXParentAttribute as String) as! AXUIElement?) ?? fEl
+                rootEl = fRole == "AXMenu" ? fEl : (asAXElement(axCopyAttr(fEl, kAXParentAttribute as String)) ?? fEl)
             }
         }
         if rootEl == nil, let rect = targetRect {
@@ -778,8 +784,8 @@ private func queryUITree(hwnd: Int, maxElements: Int, setValueIndex: Int, valueT
             if let ch = axCopyAttr(appEl, kAXChildrenAttribute as String) as? [AXUIElement] {
                 searchRoots.append(contentsOf: ch)
             }
-            if let mb = axCopyAttr(appEl, kAXMenuBarAttribute as String) {
-                if let mbCh = axCopyAttr(mb as! AXUIElement, kAXChildrenAttribute as String) as? [AXUIElement] {
+            if let mb = asAXElement(axCopyAttr(appEl, kAXMenuBarAttribute as String)) {
+                if let mbCh = axCopyAttr(mb, kAXChildrenAttribute as String) as? [AXUIElement] {
                     searchRoots.append(contentsOf: mbCh)
                 }
             }
@@ -801,6 +807,32 @@ private func queryUITree(hwnd: Int, maxElements: Int, setValueIndex: Int, valueT
                     if rootEl != nil { break }
                 }
             }
+            if rootEl == nil {
+                var winEls: [AXUIElement] = []
+                if let fw = asAXElement(axCopyAttr(appEl, kAXFocusedWindowAttribute as String)) {
+                    winEls.append(fw)
+                }
+                if let mw = asAXElement(axCopyAttr(appEl, kAXMainWindowAttribute as String)),
+                   !winEls.contains(where: { CFEqual($0, mw) }) {
+                    winEls.append(mw)
+                }
+                if let wins = axCopyAttr(appEl, kAXWindowsAttribute as String) as? [AXUIElement] {
+                    for w in wins where !winEls.contains(where: { CFEqual($0, w) }) {
+                        winEls.append(w)
+                    }
+                }
+                for w in winEls {
+                    if let wCh = axCopyAttr(w, kAXChildrenAttribute as String) as? [AXUIElement] {
+                        for s in wCh where axString(s, kAXRoleAttribute as String) == "AXMenu" {
+                            if let f = axFrame(s), abs(f.origin.x - rect.origin.x) <= 16 && abs(f.origin.y - rect.origin.y) <= 16 {
+                                rootEl = s
+                                break
+                            }
+                        }
+                    }
+                    if rootEl != nil { break }
+                }
+            }
         }
     }
     if rootEl == nil {
@@ -811,8 +843,7 @@ private func queryUITree(hwnd: Int, maxElements: Int, setValueIndex: Int, valueT
     }
 
     var focusedStr: String? = nil
-    if let fObj = axCopyAttr(appEl, kAXFocusedUIElementAttribute as String) {
-        let fEl = fObj as! AXUIElement
+    if let fEl = asAXElement(axCopyAttr(appEl, kAXFocusedUIElementAttribute as String)) {
         let fr = axString(fEl, kAXRoleAttribute as String)
         let fsr = axString(fEl, kAXSubroleAttribute as String)
         let fct = canonicalControlType(role: fr, subrole: fsr)
@@ -871,6 +902,7 @@ private func queryUITree(hwnd: Int, maxElements: Int, setValueIndex: Int, valueT
                             let cy = Int((r.origin.y + r.size.height / 2.0).rounded())
 
                             if setValueIndex == idx {
+                                AXUIElementSetMessagingTimeout(cur.el, 0.35)
                                 var isSettable: DarwinBoolean = false
                                 let chkErr = AXUIElementIsAttributeSettable(cur.el, kAXValueAttribute as CFString, &isSettable)
                                 if chkErr == .success && isSettable.boolValue {
@@ -898,6 +930,7 @@ private func queryUITree(hwnd: Int, maxElements: Int, setValueIndex: Int, valueT
                             }
 
                             if invokeIndex == idx {
+                                AXUIElementSetMessagingTimeout(cur.el, 0.35)
                                 var actionsRef: CFArray?
                                 let actErr = AXUIElementCopyActionNames(cur.el, &actionsRef)
                                 let actions = (actErr == .success ? (actionsRef as? [String]) : nil) ?? []
@@ -1142,10 +1175,15 @@ private let _macModifiers: [String: (flag: CGEventFlags, code: CGKeyCode)] = [
 ]
 
 private func performKeyChord(keys: [String]) -> [String: Any] {
+    enum ChordKey {
+        case vkey(CGKeyCode)
+        case unicode(String)
+    }
+
     let src = CGEventSource(stateID: .hidSystemState)
     var modFlags: CGEventFlags = []
     var modCodes: [CGKeyCode] = []
-    var mainKeys: [(CGKeyCode, Bool)] = []
+    var mainItems: [ChordKey] = []
 
     for raw in keys {
         let low = raw.trimmingCharacters(in: .whitespaces).lowercased()
@@ -1153,24 +1191,13 @@ private func performKeyChord(keys: [String]) -> [String: Any] {
             modFlags.insert(mod.flag)
             modCodes.append(mod.code)
         } else if let kc = _macKeyCodes[low] {
-            mainKeys.append(kc)
+            mainItems.append(.vkey(kc.code))
             if kc.shift && !modFlags.contains(.maskShift) {
                 modFlags.insert(.maskShift)
                 modCodes.append(56)
             }
         } else if raw.count == 1 {
-            // Single character fallback via Unicode key event
-            let utf16 = Array(raw.utf16)
-            if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
-               let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
-                down.flags = modFlags
-                up.flags = modFlags
-                down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-                up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-                down.post(tap: .cghidEventTap)
-                up.post(tap: .cghidEventTap)
-            }
-            return ["ok": true]
+            mainItems.append(.unicode(raw))
         } else {
             return ["error": "Unsupported macOS key token: '\(raw)'"]
         }
@@ -1182,18 +1209,33 @@ private func performKeyChord(keys: [String]) -> [String: Any] {
             ev.post(tap: .cghidEventTap)
         }
     }
-    if mainKeys.isEmpty && !modCodes.isEmpty {
+    if mainItems.isEmpty && !modCodes.isEmpty {
         Thread.sleep(forTimeInterval: 0.015)
     }
-    for (code, _) in mainKeys {
-        if let down = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: true) {
-            down.flags = modFlags
-            down.post(tap: .cghidEventTap)
-        }
-        Thread.sleep(forTimeInterval: 0.008)
-        if let up = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: false) {
-            up.flags = modFlags
-            up.post(tap: .cghidEventTap)
+    for item in mainItems {
+        switch item {
+        case .vkey(let code):
+            if let down = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: true) {
+                down.flags = modFlags
+                down.post(tap: .cghidEventTap)
+            }
+            Thread.sleep(forTimeInterval: 0.008)
+            if let up = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: false) {
+                up.flags = modFlags
+                up.post(tap: .cghidEventTap)
+            }
+        case .unicode(let ch):
+            let utf16 = Array(ch.utf16)
+            if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
+               let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
+                down.flags = modFlags
+                up.flags = modFlags
+                down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+                up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+                down.post(tap: .cghidEventTap)
+                Thread.sleep(forTimeInterval: 0.008)
+                up.post(tap: .cghidEventTap)
+            }
         }
     }
     for mc in modCodes.reversed() {

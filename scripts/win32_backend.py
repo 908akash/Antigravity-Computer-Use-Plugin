@@ -133,6 +133,9 @@ BM_CLICK = 0x00F5
 WA_ACTIVE = 1
 MK_LBUTTON = 0x0001
 SMTO_ABORTIFHUNG = 0x0002
+GWL_STYLE = -16
+ES_PASSWORD = 0x0020
+EM_GETPASSWORDCHAR = 0x00D2
 
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
@@ -383,6 +386,8 @@ user32.EnumChildWindows.argtypes = [wintypes.HWND, WNDENUMPROC, wintypes.LPARAM]
 user32.EnumChildWindows.restype = wintypes.BOOL
 user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetClassNameW.restype = ctypes.c_int
+user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetWindowLongW.restype = wintypes.LONG
 user32.SendMessageTimeoutW.argtypes = [
     wintypes.HWND, wintypes.UINT, wintypes.WPARAM, ctypes.c_void_p,
     wintypes.UINT, wintypes.UINT, ctypes.POINTER(ULONG_PTR),
@@ -816,6 +821,10 @@ def get_process_info(hwnd: int) -> tuple[int, str, str]:
     if exe:
         return pid_val, Path(exe).name, exe
     return pid_val, "unknown", ""
+
+
+def get_window_bundle_id(hwnd: int) -> str:
+    return ""
 
 
 def detect_active_popup(owner_hwnd: int) -> int:
@@ -1637,6 +1646,39 @@ def _get_start_apps_index() -> list[tuple[str, str]]:
     return entries
 
 
+_VERSIONED_RUNTIME_RE = re.compile(
+    r"^(?:pythonw?|py|node|deno|bun|perl|ruby|php|lua|bash|zsh|sh|fish|pwsh|ssh|scp|sftp)[\d._-]*(\.exe)?$",
+    re.I,
+)
+
+
+def _is_url_arg(s: str) -> bool:
+    low = (s or "").strip(" \"'").lower()
+    return low.startswith("http://") or low.startswith("https://") or low.startswith("mailto:")
+
+
+def _is_blocked_runtime_token(
+    raw_tok: str,
+    *,
+    classify_policy_fn: Callable[[str], str],
+    norm_proc_fn: Callable[[str], str],
+    blocked_runtimes: set[str],
+) -> bool:
+    canon = _canonical_proc_or_name(raw_tok)
+    cleaned = canon.strip(" \"'")
+    leaf = cleaned.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    for cand in (cleaned, leaf):
+        if not cand:
+            continue
+        if classify_policy_fn(cand) == "blocked":
+            return True
+        if norm_proc_fn(cand) in blocked_runtimes:
+            return True
+        if _VERSIONED_RUNTIME_RE.match(cand):
+            return True
+    return False
+
+
 def is_blocked_launch_target(
     raw_app: str,
     cmd: list[str],
@@ -1647,29 +1689,63 @@ def is_blocked_launch_target(
     blocked_runtimes: set[str],
     blocked_aumid_fragments: tuple[str, ...],
 ) -> str | None:
-    raw_canon = _canonical_proc_or_name(raw_app)
-    if classify_policy_fn(raw_canon) == "blocked":
+    if _is_blocked_runtime_token(
+        raw_app,
+        classify_policy_fn=classify_policy_fn,
+        norm_proc_fn=norm_proc_fn,
+        blocked_runtimes=blocked_runtimes,
+    ):
         return raw_app
-    if norm_proc_fn(raw_canon) in blocked_runtimes:
-        return raw_app
+
+    for arg in (extra_args or []):
+        s_arg = str(arg or "").strip(" \"'")
+        if not s_arg or _is_url_arg(s_arg):
+            continue
+        parts = list(s_arg.split("=", 1)) if "=" in s_arg else [s_arg]
+        for part in parts:
+            p_str = part.strip(" \"'")
+            if not p_str or _is_url_arg(p_str):
+                continue
+            if _is_blocked_runtime_token(
+                p_str,
+                classify_policy_fn=classify_policy_fn,
+                norm_proc_fn=norm_proc_fn,
+                blocked_runtimes=blocked_runtimes,
+            ):
+                return arg
+
     is_uwp_appsfolder = (
         len(cmd) == 2
-        and cmd[0].lower() == "explorer.exe"
+        and Path(cmd[0]).name.lower() == "explorer.exe"
         and str(cmd[1]).lower().startswith("shell:appsfolder\\")
-        and not (extra_args or [])
     )
     if is_uwp_appsfolder:
-        aumid = str(cmd[1]).split("\\", 1)[1].lower()
+        aumid_raw = str(cmd[1]).split("\\", 1)[1]
+        aumid = aumid_raw.lower()
         if not aumid:
             return cmd[1]
         for frag in blocked_aumid_fragments:
             if frag in aumid:
                 return aumid
+        for seg in re.split(r"[\\/!]+", aumid_raw):
+            if seg and _is_blocked_runtime_token(
+                seg,
+                classify_policy_fn=classify_policy_fn,
+                norm_proc_fn=norm_proc_fn,
+                blocked_runtimes=blocked_runtimes,
+            ):
+                return seg
+        if extra_args:
+            return str(extra_args[0])
         return None
+
     cmd0_canon = _canonical_proc_or_name(cmd[0])
-    if classify_policy_fn(cmd0_canon) == "blocked":
-        return Path(cmd0_canon).name
-    if norm_proc_fn(cmd0_canon) in blocked_runtimes:
+    if _is_blocked_runtime_token(
+        cmd[0],
+        classify_policy_fn=classify_policy_fn,
+        norm_proc_fn=norm_proc_fn,
+        blocked_runtimes=blocked_runtimes,
+    ):
         return Path(cmd0_canon).name
     return None
 
@@ -1733,6 +1809,14 @@ def resolve_installed_app(
         return best_cmd, (leaf,) if leaf.endswith(".exe") else ()
 
     for nm, aid in _get_start_apps_index():
+        if classify_policy_fn(nm) == "blocked" or _VERSIONED_RUNTIME_RE.match(nm.strip()):
+            continue
+        if any(
+            classify_policy_fn(seg) == "blocked" or _VERSIONED_RUNTIME_RE.match(seg.strip())
+            for seg in re.split(r"[\\/!]+", aid)
+            if seg.strip()
+        ):
+            continue
         nk = _norm_app_key(nm)
         ak = _norm_app_key(aid)
         words_hit = len(raw_words) >= 2 and all(w in nk for w in raw_words)
@@ -1743,6 +1827,8 @@ def resolve_installed_app(
                     resolved_aid = resolved_aid.resolve()
                 except OSError:
                     pass
+                if classify_policy_fn(resolved_aid.name) == "blocked" or _VERSIONED_RUNTIME_RE.match(resolved_aid.name):
+                    continue
                 if _get_pe_subsystem(resolved_aid) != 3:
                     return [str(resolved_aid)], (resolved_aid.name.lower(),)
             return ["explorer.exe", f"shell:AppsFolder\\{aid}"], (f"{key}.exe", key)
@@ -1758,7 +1844,7 @@ def resolve_installed_app(
                 p = p.resolve()
             except OSError:
                 pass
-            if p.suffix.lower() != ".exe" or classify_policy_fn(p.name) == "blocked":
+            if p.suffix.lower() != ".exe" or classify_policy_fn(p.name) == "blocked" or _VERSIONED_RUNTIME_RE.match(p.name):
                 continue
             subsys = _get_pe_subsystem(p)
             if subsys != 3:
@@ -2020,8 +2106,26 @@ def enum_win32_child_controls(hwnd: int, start_index: int = 0, max_items: int = 
             return True
         cls_buf = ctypes.create_unicode_buffer(128)
         user32.GetClassNameW(wintypes.HWND(child_hwnd), cls_buf, 128)
-        text_val = get_window_title_safe(child_hwnd, timeout_ms=80)
         cls_name = cls_buf.value or "Control"
+        cls_low = cls_name.lower()
+        is_pwd = (int(user32.GetWindowLongW(wintypes.HWND(child_hwnd), GWL_STYLE)) & ES_PASSWORD) != 0
+        if not is_pwd and "edit" in cls_low:
+            pw_ch = ULONG_PTR(0)
+            if (
+                user32.SendMessageTimeoutW(
+                    wintypes.HWND(child_hwnd),
+                    EM_GETPASSWORDCHAR,
+                    0,
+                    None,
+                    SMTO_ABORTIFHUNG,
+                    50,
+                    ctypes.byref(pw_ch),
+                )
+                != 0
+                and pw_ch.value != 0
+            ):
+                is_pwd = True
+        text_val = "" if is_pwd else get_window_title_safe(child_hwnd, timeout_ms=80)
         found.append({
             "index": start_index + len(found),
             "depth": 1,
@@ -2096,9 +2200,10 @@ def _ensure_compiled_uia_bridge() -> Path | None:
     csc = fx_dir / "csc.exe"
     if not csc.is_file() or not UIA_CS_FILE.is_file():
         return None
+    tmp_exe = _RUNTIME_DIR / f"uia_fast_bridge.{os.getpid()}.tmp.exe"
     wpf_dir = str(fx_dir / "WPF")
     cmd = [
-        str(csc), "/nologo", "/optimize+", "/target:exe", f"/out:{exe_path}",
+        str(csc), "/nologo", "/optimize+", "/target:exe", f"/out:{tmp_exe}",
         f"/lib:{wpf_dir}", "/r:UIAutomationClient.dll", "/r:UIAutomationTypes.dll",
         "/r:WindowsBase.dll", "/r:System.Web.Extensions.dll", str(UIA_CS_FILE),
     ]
@@ -2108,7 +2213,8 @@ def _ensure_compiled_uia_bridge() -> Path | None:
     env["TEMP"] = str(_RUNTIME_DIR)
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=10, creationflags=flags, env=env)
-        if res.returncode == 0 and exe_path.is_file():
+        if res.returncode == 0 and tmp_exe.is_file():
+            os.replace(tmp_exe, exe_path)
             try:
                 sha_path.write_text(f"{cs_sha}:{_file_sha256(exe_path)}\n", encoding="utf-8")
             except OSError:
@@ -2117,6 +2223,11 @@ def _ensure_compiled_uia_bridge() -> Path | None:
             return exe_path
     except Exception:
         pass
+    finally:
+        try:
+            tmp_exe.unlink(missing_ok=True)
+        except OSError:
+            pass
     return None
 
 
@@ -2464,6 +2575,19 @@ def send_child_hwnd_text(child_hwnd: int, text: str, cx_screen: int | None = Non
     user32.SendMessageTimeoutW(wintypes.HWND(child_hwnd), WM_NULL, 0, None, SMTO_ABORTIFHUNG, 150, ctypes.byref(res_len))
 
 
+def _child_belongs_to_target(child_hwnd: int, target_hwnd: int) -> bool:
+    if child_hwnd <= 0 or target_hwnd <= 0:
+        return False
+    if not user32.IsWindow(wintypes.HWND(child_hwnd)):
+        return False
+    root = int(user32.GetAncestor(wintypes.HWND(child_hwnd), GA_ROOT) or 0)
+    if root == int(target_hwnd):
+        return True
+    t_pid = get_window_pid(target_hwnd)
+    c_pid = get_window_pid(child_hwnd)
+    return t_pid > 0 and c_pid == t_pid
+
+
 def click_element_direct(
     hwnd: int,
     obs: dict[str, Any],
@@ -2487,7 +2611,7 @@ def click_element_direct(
                     "structured": res,
                 }
         child_hwnd = _resolve_element_child_hwnd(match, cx, cy)
-        if child_hwnd > 0:
+        if child_hwnd > 0 and (_child_belongs_to_target(child_hwnd, hwnd) or _child_belongs_to_target(child_hwnd, uia_target_hwnd)):
             send_child_hwnd_click(child_hwnd, cx, cy)
             return {
                 "summary": f"Dispatched background window-message click to [{elem_idx}] {match['controlType']} (hwnd:{child_hwnd}).",
@@ -2518,6 +2642,8 @@ def set_value_direct(
                 "structured": res,
             }
     child_hwnd = _resolve_element_child_hwnd(match, cx, cy)
+    if child_hwnd > 0 and not (_child_belongs_to_target(child_hwnd, hwnd) or _child_belongs_to_target(child_hwnd, uia_target_hwnd)):
+        child_hwnd = 0
     off_default = current_desktop_name().lower() != "default" or get_foreground_hwnd() == 0
     cls_low = ""
     if child_hwnd > 0:
@@ -2646,13 +2772,9 @@ def _get_ancestor_pids() -> list[int]:
         kernel32.CloseHandle(snap)
     ancestors: list[int] = []
     cur = ppid_map.get(my_pid, 0)
-    for _ in range(2):
-        if cur > 4 and cur not in ancestors:
-            ancestors.append(cur)
-            cur = ppid_map.get(cur, 0)
-        else:
-            break
-    return ancestors
+    if cur > 4:
+        ancestors.append(cur)
+    return ancestors[:1]
 
 
 def make_parent_exit_checker() -> tuple[Callable[[], bool], Callable[[], None]]:

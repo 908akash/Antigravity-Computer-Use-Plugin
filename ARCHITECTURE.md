@@ -10,7 +10,7 @@ This document explains how Antigravity Computer Use operates natively on **both 
 flowchart TD
     Host["MCP Host (Antigravity / Standalone)"] -->|"cwd=${PLUGIN_ROOT}, ./scripts/launch_mcp"| Dispatch{"OS Dispatch"}
     Dispatch -->|"macOS (POSIX exec #!/bin/sh)"| LaunchMac["scripts/launch_mcp"]
-    Dispatch -->|"Windows (PATHEXT -> .cmd)"| LaunchWin["scripts/launch_mcp.cmd"]
+    Dispatch -->|"Windows (PATHEXT -> .exe)"| LaunchWin["scripts/launch_mcp.exe -> scripts/launch_mcp.cmd"]
     LaunchMac --> Server["scripts/computer_use_server.py v3.2.0"]
     LaunchWin --> Server
     Server -->|"sys.platform == darwin"| MacBE["scripts/macos_backend.py"]
@@ -24,7 +24,7 @@ flowchart TD
 ### Extensionless cross-platform `mcp_config.json`
 Antigravity expands `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` inside `"args"`, `"cwd"`, and `"env"` (not inside `"command"`), so `mcp_config.json` sets `"cwd": "${PLUGIN_ROOT}"` and `"command": "./scripts/launch_mcp"` with no file extension:
 - On **macOS**, `forkExec` changes directory into `"cwd"` (`${PLUGIN_ROOT}`) and executes `./scripts/launch_mcp` (`#!/bin/sh`, `LF`, `0755`) directly. It discovers Python 3.9+ (including stock Apple Command Line Tools `/usr/bin/python3` 3.9.6 or Homebrew Python 3.12+), installs `pillow` and `numpy` via `pip install --target "$RUNTIME_ROOT/pylibs_cp<XY>"` (avoiding PEP 668 externally-managed errors), and `exec`s `computer_use_server.py`.
-- On **Windows**, Go `os/exec` (`lookExtensions("./scripts/launch_mcp", c.Dir)`) searches `PATHEXT` (`.COM;.EXE;.BAT;.CMD`) inside `"cwd"` (`${PLUGIN_ROOT}`), ignores the extensionless POSIX script, and resolves `./scripts/launch_mcp` directly to `scripts\launch_mcp.cmd` (`CRLF`), leaving the Windows launcher untouched.
+- On **Windows**, Go `os/exec.Command("./scripts/launch_mcp")` (`lookExtensions("./scripts/launch_mcp", c.Dir)`) searches `PATHEXT` (`.COM;.EXE;.BAT;.CMD`) inside `"cwd"` (`${PLUGIN_ROOT}`), ignores the extensionless POSIX script, and picks up `scripts/launch_mcp.exe` (a 4 KB deterministic AnyCPU `.NET Framework 4.x` wrapper compiled from `scripts/launch_mcp_win.cs`) first before `.cmd` so Windows spawns a native PE image directly without `cmd.exe /c` choking on `./` forward slashes, then delegates cleanly to `scripts\launch_mcp.cmd` (`CRLF`).
 
 ### Orphan-proof shutdown and artifact purge
 - **macOS**: The lifecycle watchdog records `initial_ppid = os.getppid()` and exits cleanly if `os.getppid() == 1` or `os.kill(ppid, 0)` raises `ProcessLookupError`. Both `macos_ax_bridge` and `overlay_hud_mac` also monitor their parent server PID independently and exit if orphaned.

@@ -1,15 +1,16 @@
-"""Universal Fast Local UI Element Matcher (v3.1.0).
+"""Universal Fast Local UI Element Matcher (v3.2.0).
 
-Zero app-specific hardcoding, zero third-party dependencies (pure Python stdlib + ctypes),
-and full Unicode support across any Windows desktop application:
+Zero app-specific hardcoding, zero third-party dependencies (pure Python stdlib),
+and full Unicode support across macOS (`AXUIElement`) and Windows (UI Automation)
+desktop applications:
   - Compound Step Decomposition (`decompose_goal_steps`): Splits multi-step instructions
     ("Click Settings -> Connections -> Enable Sync", or arithmetic expressions) into
     narrow single-action sub-goals + optional final-state verification clause.
-  - Tier 1 (<0.4ms, up to 120 UIA controls): Unicode NFKD folding & multilingual CJK/script
-    tokenization, identifier splitting (camelCase/snake_case/UI-suffix aware), lightweight
-    morphological stemming + consonant skeleton, Jaro-Winkler + 3-gram Dice similarity,
-    Unicode math symbol verbalizations (`unicodedata.name`), cardinal numbers, W3C CSS3 sRGB
-    perceptual color proximity, and UIA control-role disambiguation.
+  - Tier 1 (<0.4ms, up to 120 AXUIElement/UIA controls): Unicode NFKD folding & multilingual
+    CJK/script tokenization, identifier splitting (camelCase/snake_case/UI-suffix aware),
+    lightweight morphological stemming + consonant skeleton, Jaro-Winkler + 3-gram Dice
+    similarity, Unicode math symbol verbalizations (`unicodedata.name`), cardinal numbers,
+    W3C CSS3 sRGB perceptual color proximity, and AXUIElement/UIA control-role disambiguation.
   - Tier 2 (optional local LLM fallback): Uses an explicitly configured `CUA_MATCHER_ENDPOINT`
     (or opt-in `CUA_MATCHER_AUTO_DISCOVER=1` probing Ollama/LM Studio/Jan ports with a 60s cache TTL).
 """
@@ -17,6 +18,7 @@ and full Unicode support across any Windows desktop application:
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import ipaddress
 import json
 import math
 import os
@@ -24,6 +26,7 @@ import re
 import time
 from typing import Any
 import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -160,15 +163,36 @@ _DATE_OR_PHONE_RE = re.compile(r"^(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}-\d{2,
 _LOCAL_LLM_PORTS = (11434, 1234, 1337)
 _TOKEN_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]|[^\W_]+|[.+*/=%\-]", re.UNICODE)
 
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.URLError("HTTP redirects disabled for local matcher")
+
+
+_NO_PROXY_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    _NoRedirectHandler(),
+)
 
 _DEAD_ENDPOINT_UNTIL: float = 0.0
 _CACHED_SERVER: tuple[float, str, str, str, str] | None = None  # (expires_at, base_url, model_id, api_key, api_kind)
 
 
 def _is_loopback_host(host: str | None) -> bool:
-    return (host or "").strip().lower() in _LOOPBACK_HOSTS
+    h = (host or "").strip().lower().strip("[]")
+    if not h:
+        return False
+    if h == "localhost":
+        return True
+    if "%" in h:
+        h = h.split("%", 1)[0]
+    try:
+        addr = ipaddress.ip_address(h)
+        if addr.is_loopback:
+            return True
+        mapped = getattr(addr, "ipv4_mapped", None)
+        return bool(mapped is not None and mapped.is_loopback)
+    except ValueError:
+        return False
 
 
 def _urlopen_safe(req: urllib.request.Request, *, timeout: float):

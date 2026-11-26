@@ -55,14 +55,11 @@ _pylibs_candidates: list[Path] = []
 _env_pylibs = os.environ.get("CUA_PYLIBS_DIR", "").strip()
 if _env_pylibs:
     _pylibs_candidates.append(Path(_env_pylibs))
-for _rt_base in (RUNTIME_ROOT, PLUGIN_DIR / ".runtime"):
-    if _rt_base.is_dir():
+else:
+    for _rt_base in (RUNTIME_ROOT, PLUGIN_DIR / ".runtime"):
         _exact = _rt_base / _py_tag
-        if _exact.is_dir():
+        if _exact.is_dir() and _exact not in _pylibs_candidates:
             _pylibs_candidates.append(_exact)
-        for _cand in sorted(_rt_base.glob("pylibs_cp*")):
-            if _cand.is_dir() and _cand not in _pylibs_candidates:
-                _pylibs_candidates.append(_cand)
 for _cand in reversed(_pylibs_candidates):
     if _cand.is_dir() and str(_cand) not in sys.path:
         sys.path.insert(0, str(_cand))
@@ -165,7 +162,7 @@ class TkinterHarness:
         header.pack(fill="x", padx=16, pady=(16, 10))
         tk.Label(
             header,
-            text="Antigravity Windows 11 Computer Use",
+            text="Antigravity Computer Use",
             fg="#f8fafc",
             bg="#1e293b",
             font=("Segoe UI", 14, "bold"),
@@ -481,7 +478,7 @@ def _get_stdlib_module_names() -> set[str]:
     base = set(sys.builtin_module_names) | {
         "__future__", "argparse", "ast", "atexit", "base64", "collections", "concurrent",
         "contextlib", "ctypes", "datetime", "difflib", "errno", "fnmatch", "functools",
-        "glob", "hashlib", "heapq", "http", "importlib", "inspect", "io", "itertools",
+        "glob", "hashlib", "heapq", "http", "importlib", "inspect", "io", "ipaddress", "itertools",
         "json", "logging", "math", "os", "pathlib", "platform", "plistlib", "posix",
         "posixpath", "queue", "random", "re", "shutil", "signal", "socket", "ssl", "stat",
         "string", "struct", "subprocess", "sys", "tempfile", "textwrap", "threading",
@@ -554,7 +551,7 @@ def main() -> int:
         target_hwnd = snap0["hwnd"]
         assert target_hwnd > 0
 
-        harness_proc = "macos_test_harness" if IS_MAC else "python.exe"
+        harness_proc = "macos_test_harness" if IS_MAC else Path(sys.executable).name
         wait_res = client.call_tool(
             "cu_wait_for_window",
             {
@@ -624,11 +621,23 @@ def main() -> int:
         assert not grant_res["isError"], grant_res
         assert grant_res["structuredContent"]["mode"] == "interactive"
 
-        blocked_chords = ("cmd+space", "cmd+opt+esc", "cmd+ctrl+q", "ctrl+shift+esc") if IS_MAC else ("win+r", "ctrl+shift+esc", "ctrl+esc")
+        blocked_chords = (
+            ("cmd+space", "cmd+opt+esc", "cmd+shift+opt+esc", ["cmd", " "], "cmd+ctrl+q", "ctrl+shift+esc")
+            if IS_MAC
+            else ("win+r", "ctrl+shift+esc", "ctrl+alt+esc", "ctrl+esc")
+        )
         for blocked_chord in blocked_chords:
             blk_chord_res = client.call_tool("cu_key", {"hwnd": target_hwnd, "keys": blocked_chord})
             assert blk_chord_res["isError"] is True, f"Expected {blocked_chord} to be blocked"
             assert "policy_blocked" in blk_chord_res["content"][0]["text"]
+
+        empty_key_res = client.call_tool("cu_key", {"hwnd": target_hwnd, "keys": ["ctrl", ""]})
+        assert empty_key_res["isError"] is True, empty_key_res
+
+        assert server_mod._is_unc_or_device_path(r"\??\C:\foo.json") is True
+        assert server_mod._is_unc_or_device_path("CON.json") is True
+        assert server_mod._is_unc_or_device_path(r"C:\tmp\nul") is True
+        assert server_mod._is_unc_or_device_path("console.json") is False
 
         if IS_WIN:
             explorer_cmd_res = client.call_tool("cu_launch_app", {"app": "explorer.exe", "args": ["cmd.exe"]})
@@ -641,11 +650,15 @@ def main() -> int:
 
         # Sensitive editor title guard (unit + live end-to-end over MCP)
         assert server_mod.check_sensitive_editor_title("notepad.exe", "mcp_config.json - Notepad") is not None
+        assert server_mod.check_sensitive_editor_title("notepad.exe", "*mcp_config.json - Notepad") is not None
+        assert server_mod.check_sensitive_editor_title("notepad.exe", "•mcp_config.json - Notepad") is not None
         assert server_mod.check_sensitive_editor_title("notepad.exe", "notes.txt - Notepad") is None
         assert server_mod.check_sensitive_editor_title("TextEdit", ".zshrc — Edited") is not None
         assert server_mod.check_sensitive_editor_title("TextEdit", "●.zshrc") is not None
         assert server_mod.check_sensitive_editor_title("TextEdit", ".zprofile") is not None
         assert server_mod.check_sensitive_editor_title("TextEdit", "deploy.sh - TextEdit") is not None
+        assert server_mod.check_sensitive_editor_title("TextEdit", "deploy.bash - TextEdit") is not None
+        assert server_mod.check_sensitive_editor_title("coteditor", "profile.psm1 - CotEditor") is not None
         assert server_mod.check_sensitive_editor_title("TextEdit", "app.py - TextEdit") is None
         assert server_mod.check_sensitive_editor_title("code.exe", "index.js - Visual Studio Code") is None
 
@@ -782,9 +795,20 @@ def main() -> int:
         }
 
         # 6. cu_clipboard_write + cu_clipboard_read round-trip & guards
+        assert server_mod._parse_bool("false") is False
+        assert server_mod._parse_bool("0") is False
+        assert server_mod._parse_bool("no") is False
+        assert server_mod._parse_bool("") is False
+        assert server_mod._parse_bool("true") is True
+        assert server_mod._parse_bool(None, True) is True
+
         clip_guard = client.call_tool("cu_clipboard_read", {})
         assert clip_guard["isError"] is True
         assert "clipboard_permission_required" in clip_guard["content"][0]["text"]
+
+        clip_str_false = client.call_tool("cu_clipboard_read", {"allow_clipboard": "false"})
+        assert clip_str_false["isError"] is True
+        assert "clipboard_permission_required" in clip_str_false["content"][0]["text"]
 
         clip_long = client.call_tool("cu_clipboard_write", {"text": "x" * 16001})
         assert clip_long["isError"] is True
@@ -1028,6 +1052,31 @@ def main() -> int:
         os.environ.pop("CUA_ALLOW_REMOTE_MATCHER", None)
         try:
             assert local_matcher_mod._discover_local_server() is None
+            assert local_matcher_mod._is_loopback_host("127.0.0.1") is True
+            assert local_matcher_mod._is_loopback_host("127.0.0.2") is True
+            assert local_matcher_mod._is_loopback_host("localhost") is True
+            assert local_matcher_mod._is_loopback_host("::1") is True
+            assert local_matcher_mod._is_loopback_host("example.com") is False
+            assert local_matcher_mod._is_loopback_host("169.254.169.254") is False
+            import urllib.error
+            import urllib.request
+            assert any(
+                isinstance(h, local_matcher_mod._NoRedirectHandler)
+                for h in local_matcher_mod._NO_PROXY_OPENER.handlers
+            )
+            redir_blocked = False
+            try:
+                local_matcher_mod._NoRedirectHandler().redirect_request(
+                    urllib.request.Request("http://127.0.0.1:11434/test"),
+                    None,
+                    302,
+                    "Found",
+                    {},
+                    "http://169.254.169.254/latest/meta-data/",
+                )
+            except urllib.error.URLError:
+                redir_blocked = True
+            assert redir_blocked is True, "Expected _NoRedirectHandler to reject HTTP redirects"
         finally:
             if prev_ep_env is None:
                 os.environ.pop("CUA_MATCHER_ENDPOINT", None)
@@ -1125,15 +1174,32 @@ def main() -> int:
                 assert not post_cli_status["isError"], post_cli_status
                 assert post_cli_status["structuredContent"]["serverVersion"] == "3.2.0"
 
+            launch_exe = PLUGIN_DIR / "scripts" / "launch_mcp.exe"
+            if launch_exe.is_file():
+                exe_proc = subprocess.run(
+                    ["./scripts/launch_mcp", "--self-test"],
+                    executable=str(launch_exe),
+                    cwd=str(PLUGIN_DIR),
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                    check=True,
+                )
+                exe_info = json.loads(exe_proc.stdout.strip())
+                assert exe_info.get("server") == "computer-use@3.2.0", exe_info
+
         # Esc dismissal > 30s ago notifies model with user_closed_computer_use once, then allows clean restart
-        pid_file_bak = server_mod.OVERLAY_PID_FILE.read_text(encoding="utf-8") if server_mod.OVERLAY_PID_FILE.is_file() else None
+        test_pid_file = RUNTIME_ROOT / "test_esc_pid.json"
+        old_pid_file = server_mod.OVERLAY_PID_FILE
         old_esc_handled = server_mod._LAST_HANDLED_ESC_TS
         old_esc_pending = server_mod._PENDING_USER_CANCEL_TS
+        old_grants_esc_bak = dict(server_mod.STATE.get("grants") or {})
         try:
+            server_mod.OVERLAY_PID_FILE = test_pid_file
             esc_mock_ts = time.time() - 30.0
             server_mod._LAST_HANDLED_ESC_TS = 0.0
             server_mod._PENDING_USER_CANCEL_TS = 0.0
-            server_mod.OVERLAY_PID_FILE.write_text(
+            test_pid_file.write_text(
                 json.dumps({"pid": 999999, "status": "exiting", "reason": "esc", "stoppedAt": esc_mock_ts}),
                 encoding="utf-8",
             )
@@ -1145,12 +1211,11 @@ def main() -> int:
             assert "user_closed_computer_use" in esc_raised, f"Expected user_closed_computer_use, got {esc_raised!r}"
             server_mod.check_emergency_stop(check_corner=False)
         finally:
+            server_mod.OVERLAY_PID_FILE = old_pid_file
             server_mod._LAST_HANDLED_ESC_TS = old_esc_handled
             server_mod._PENDING_USER_CANCEL_TS = old_esc_pending
-            if pid_file_bak is not None:
-                server_mod.OVERLAY_PID_FILE.write_text(pid_file_bak, encoding="utf-8")
-            else:
-                server_mod.OVERLAY_PID_FILE.unlink(missing_ok=True)
+            server_mod.STATE["grants"] = old_grants_esc_bak
+            test_pid_file.unlink(missing_ok=True)
 
         # Unicode matching, strict numeric word boundary, and ISO date preservation
         jp_res = local_matcher_mod.match_ui_element(
@@ -1198,7 +1263,7 @@ def main() -> int:
         win_user_path_re = re.compile(r"[a-zA-Z]:\\{1,2}Users\\{1,2}[A-Za-z0-9_ ]+", re.I)
         mac_user_path_re = re.compile(r"/Users/(?!Shared\b)[A-Za-z0-9._-]+")
         scan_exts = {".py", ".cs", ".ps1", ".cmd", ".swift", ".sh", ".json", ".md", ".txt", ".svg"}
-        for rel_target in ("scripts", "skills", "mcp_config.json", "plugin.json", "README.md", "ARCHITECTURE.md", "SECURITY.md", "tests"):
+        for rel_target in ("scripts", "skills", "assets", "mcp_config.json", "plugin.json", "README.md", "ARCHITECTURE.md", "SECURITY.md", "tests"):
             p_t = PLUGIN_DIR / rel_target
             if not p_t.exists():
                 continue

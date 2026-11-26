@@ -25,6 +25,8 @@ import math
 import os
 from pathlib import Path
 import re
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -106,7 +108,8 @@ def _resolve_runtime_dir(default_dir: Path) -> Path:
     candidates.append(default_dir)
     if sys.platform == "darwin":
         candidates.append(Path.home() / "Library" / "Application Support" / "antigravity-computer-use")
-        candidates.append(Path(tempfile.gettempdir()) / "antigravity-computer-use")
+        temp_name = f"antigravity-computer-use-{os.getuid()}" if hasattr(os, "getuid") else "antigravity-computer-use"
+        candidates.append(Path(tempfile.gettempdir()) / temp_name)
     else:
         local_app = os.environ.get("LOCALAPPDATA", "").strip()
         if local_app:
@@ -116,6 +119,11 @@ def _resolve_runtime_dir(default_dir: Path) -> Path:
             candidates.append(Path(temp_dir) / "computer-use-win32")
     for cand in candidates:
         if _dir_is_writable(cand):
+            if hasattr(os, "getuid"):
+                try:
+                    os.chmod(cand, 0o700)
+                except OSError:
+                    pass
             return cand
     return candidates[0]
 
@@ -125,6 +133,13 @@ SHOTS_DIR = RUNTIME_DIR / "screenshots"
 STATE_FILE = RUNTIME_DIR / "session_state.json"
 OVERLAY_STATE_FILE = RUNTIME_DIR / "overlay_state.json"
 OVERLAY_PID_FILE = RUNTIME_DIR / "overlay_pid.json"
+if hasattr(os, "getuid"):
+    try:
+        SHOTS_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(RUNTIME_DIR, 0o700)
+        os.chmod(SHOTS_DIR, 0o700)
+    except OSError:
+        pass
 
 _backend.configure(RUNTIME_DIR, OVERLAY_PID_FILE)
 _IS_LOW_INTEGRITY = _backend.IS_LOW_INTEGRITY
@@ -162,20 +177,30 @@ BLOCKED_PROCESSES = {
     "activity monitor", "securityagent", "coreservicesuiagent",
     "localauthenticationuicompanion", "authenticationservicesagent",
     "usernotificationcenter", "loginwindow", "screensaverengine",
+    "script editor", "automator", "shortcuts", "installer",
     # macOS agent hosts (prevent self-approval / prompt-injection self-hijack)
     "antigravity", "cursor", "claude", "codex",
 }
 
 _BLOCKED_LAUNCH_RUNTIMES = {
-    "python.exe", "pythonw.exe", "py.exe", "node.exe", "deno.exe", "bun.exe",
+    "python.exe", "python3.exe", "pythonw.exe", "py.exe", "node.exe", "deno.exe", "bun.exe",
     "python", "python3", "node", "deno", "bun", "osascript", "open", "sh", "bash", "zsh",
-    "perl", "ruby", "php", "lua", "swift", "xcrun", "env", "ssh", "tmux", "screen", "expect",
+    "perl", "ruby", "php", "lua", "swift", "xcrun", "env", "ssh", "scp", "sftp",
+    "tmux", "screen", "expect",
+    "ssh.exe", "scp.exe", "sftp.exe", "perl.exe", "ruby.exe", "php.exe", "lua.exe",
+    "swift.exe", "wmic.exe", "forfiles.exe", "pcalua.exe", "hh.exe", "msbuild.exe",
+    "csc.exe", "vbc.exe", "installutil.exe", "odbcconf.exe", "cmstp.exe",
+    "infdefaultinstall.exe", "mavinject.exe", "env.exe", "expect.exe", "tmux.exe", "screen.exe",
 }
 
 _BLOCKED_AUMID_FRAGMENTS = (
     "windowsterminal", "terminal", "iterm", "warp", "ghostty", "alacritty", "kitty",
-    "powershell", "pwsh", "commandprompt", "cmd.exe", "wsl", "ubuntu", "debian",
-    "kali", "opensuse", "regedit", "taskmgr", "keychainaccess", "activitymonitor",
+    "powershell", "powershell_ise", "pwsh", "commandprompt", "cmd.exe", "wsl", "ubuntu", "debian",
+    "kali", "opensuse", "regedit", "regedt32", "taskmgr", "sechealthui", "mmc",
+    "keychainaccess", "activitymonitor",
+    "git-bash", "gitbash", "mintty", "wezterm", "hyper", "tabby", "conemu", "putty",
+    "procexp", "procmon", "windbg", "x64dbg", "conhost", "openconsole",
+    "mshta", "cscript", "wscript", "runas", "scripteditor", "automator", "shortcuts",
     "1password", "onepassword", "bitwarden", "keepass", "dashlane", "passwords",
     "antigravity", "claude", "codex", "cursor",
 )
@@ -193,10 +218,73 @@ EDITOR_PROCESSES = {
     "notepad.exe", "notepad++.exe", "wordpad.exe", "code.exe", "code - insiders.exe",
     "windsurf.exe", "vscodium.exe", "zed.exe", "sublime_text.exe",
     "devenv.exe", "idea64.exe", "pycharm64.exe", "webstorm64.exe",
+    "goland64.exe", "clion64.exe", "rider64.exe", "phpstorm64.exe", "rubymine64.exe",
     # macOS
     "textedit", "code", "visual studio code", "code - insiders", "windsurf",
     "vscodium", "zed", "sublime text", "sublime_text", "bbedit", "nova",
     "xcode", "pycharm", "intellij idea", "webstorm", "goland", "clion",
+    "rider", "phpstorm", "rubymine", "coteditor", "textmate",
+}
+
+_MACOS_BLOCKED_BUNDLE_IDS = {
+    "com.apple.terminal",
+    "com.apple.keychainaccess",
+    "com.apple.passwords",
+    "com.apple.activitymonitor",
+    "com.apple.securityagent",
+    "com.apple.coreservices.uiagent",
+    "com.apple.localauthentication.uicompanion",
+    "com.apple.authenticationservicesagent",
+    "com.apple.usernotificationcenter",
+    "com.apple.loginwindow",
+    "com.apple.screensaver.engine",
+    "com.apple.scripteditor2",
+    "com.apple.automator",
+    "com.apple.shortcuts",
+    "com.apple.installer",
+    "com.googlecode.iterm2",
+    "dev.warp.warp-stable",
+    "com.mitchellh.ghostty",
+    "org.alacritty",
+    "net.kovidgoyal.kitty",
+    "com.github.wez.wezterm",
+    "co.zeit.hyper",
+    "org.tabby",
+    "com.1password.1password",
+    "com.agilebits.onepassword7",
+    "com.bitwarden.desktop",
+    "org.keepassxc.keepassxc",
+    "com.dashlane.dashlanephonefinal",
+}
+_MACOS_SETTINGS_BUNDLE_IDS = {"com.apple.systempreferences"}
+_MACOS_BROWSER_BUNDLE_IDS = {
+    "com.apple.safari",
+    "company.thebrowser.browser",
+    "com.google.chrome",
+    "com.brave.browser",
+    "org.mozilla.firefox",
+    "com.microsoft.edgemac",
+    "com.operasoftware.opera",
+    "com.vivaldi.vivaldi",
+    "org.chromium.chromium",
+}
+_MACOS_EDITOR_BUNDLE_IDS = {
+    "com.apple.textedit",
+    "com.microsoft.vscode",
+    "com.microsoft.vscodeinsiders",
+    "com.sublimetext.4",
+    "com.sublimetext.3",
+    "com.barebones.bbedit",
+    "dev.zed.zed",
+    "com.apple.dt.xcode",
+    "com.panic.nova",
+    "com.coteditor.coteditor",
+    "com.macromates.textmate",
+    "com.jetbrains.pycharm",
+    "com.jetbrains.intellij",
+    "com.jetbrains.webstorm",
+    "com.jetbrains.goland",
+    "com.jetbrains.clion",
 }
 
 _MACOS_BLOCKED_SETTINGS_PROCS = {"system settings", "system preferences"}
@@ -205,17 +293,17 @@ _MACOS_BLOCKED_SETTINGS_TITLE_FRAGS = (
     "accessibility", "screen recording", "screen & system audio", "audio recording",
     "full disk access", "input monitoring", "automation", "profiles",
     "device management", "users & groups", "login items", "firewall",
-    "gatekeeper", "lock screen", "apple id", "apple account", "icloud",
+    "gatekeeper", "lock screen", "apple id", "apple account", "icloud", "sharing",
 )
 
 SENSITIVE_TITLE_PATTERNS = [
-    re.compile(r"(?:^|[\s\\/\[\(●])(\.bashrc|\.bash_profile|\.zshrc|\.zprofile|\.profile|profile\.ps1|microsoft\.powershell_profile\.ps1)(?:$|[\s\*—\-–\]\):,])", re.I),
-    re.compile(r"(?:^|[\s\\/\[\(●])(authorized_keys|known_hosts|id_rsa|id_ed25519|id_ecdsa|\.ssh)(?:$|[\s\\/\*—\-–\]\):,])", re.I),
-    re.compile(r"(?:^|[\s\\/\[\(●])(\.gitconfig|mcp_config\.json|claude_desktop_config\.json|\.claude\.json|settings\.json|config\.toml)(?:$|[\s\*—\-–\]\):,])", re.I),
-    re.compile(r"(?:^|[\s\\/\[\(●])(\.env(?:\.[a-z0-9_.-]+)?|\.npmrc|\.pypirc|\.netrc)(?:$|[\s\*—\-–\]\):,])", re.I),
-    re.compile(r"(?:^|[\s\\/\[\(●])credentials(?:\.[a-z0-9_.-]+)?(?:$|[\s\\/\*—\-–\]\):,])", re.I),
+    re.compile(r"(?:^|[\s\\/\[\(●•*])(\.bashrc|\.bash_profile|\.zshrc|\.zprofile|\.profile|profile\.ps1|microsoft\.powershell_profile\.ps1)(?:$|[\s\*—\-–\]\):,])", re.I),
+    re.compile(r"(?:^|[\s\\/\[\(●•*])(authorized_keys|known_hosts|id_rsa|id_ed25519|id_ecdsa|\.ssh)(?:$|[\s\\/\*—\-–\]\):,])", re.I),
+    re.compile(r"(?:^|[\s\\/\[\(●•*])(\.gitconfig|mcp_config\.json|claude_desktop_config\.json|\.claude\.json|settings\.json|config\.toml)(?:$|[\s\*—\-–\]\):,])", re.I),
+    re.compile(r"(?:^|[\s\\/\[\(●•*])(\.env(?:\.[a-z0-9_.-]+)?|\.npmrc|\.pypirc|\.netrc)(?:$|[\s\*—\-–\]\):,])", re.I),
+    re.compile(r"(?:^|[\s\\/\[\(●•*])credentials(?:\.[a-z0-9_.-]+)?(?:$|[\s\\/\*—\-–\]\):,])", re.I),
     re.compile(r"\.git[\\/]hooks", re.I),
-    re.compile(r"\.(bat|cmd|reg|vbs|vbe|jse|wsf|wsh|hta|ps1|sh|zsh|pem|key|pfx|p12)(?:$|[\s\*—\-–\]\):,])", re.I),
+    re.compile(r"\.(bat|cmd|reg|vbs|vbe|jse|wsf|wsh|hta|ps1|psm1|psd1|sh|bash|zsh|command|pem|key|pfx|p12)(?:$|[\s\*—\-–\]\):,])", re.I),
 ]
 
 BLOCKED_KEYS_WIN32 = {
@@ -224,6 +312,29 @@ BLOCKED_KEYS_WIN32 = {
 BLOCKED_KEYS_DARWIN = {
     "win", "winleft", "winright", "windows", "os",
 }
+
+_WIN_DOS_DEVICES = frozenset({
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+})
+
+
+def _parse_bool(val: Any, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return val != 0
+    if isinstance(val, str):
+        low = val.strip().lower()
+        if low in ("1", "true", "yes"):
+            return True
+        if low in ("0", "false", "no", ""):
+            return False
+        return False
+    return False
 
 
 def _norm_app_key(s: str) -> str:
@@ -237,7 +348,13 @@ def _norm_app_key(s: str) -> str:
 
 def _is_unc_or_device_path(s: str) -> bool:
     norm = (s or "").strip(" \"'").replace("/", "\\")
-    return norm.startswith("\\\\")
+    if not norm:
+        return False
+    if norm.startswith("\\\\") or norm.startswith("\\??\\"):
+        return True
+    leaf = norm.rstrip("\\").rsplit("\\", 1)[-1]
+    stem = leaf.split(".", 1)[0].rstrip(":").lower()
+    return stem in _WIN_DOS_DEVICES
 
 
 def _canonical_proc_or_name(raw: str) -> str:
@@ -263,7 +380,16 @@ def _norm_proc_name(name: str) -> str:
     return s
 
 
-def classify_policy(process_name: str) -> str:
+def classify_policy(process_name: str, bundle_id: str = "") -> str:
+    low_bid = (bundle_id or "").strip().lower()
+    if low_bid:
+        if low_bid in _MACOS_BLOCKED_BUNDLE_IDS:
+            return "blocked"
+        if low_bid in _MACOS_BROWSER_BUNDLE_IDS:
+            return "look_only"
+    raw_low = (process_name or "").strip().lower()
+    if raw_low in _MACOS_BLOCKED_BUNDLE_IDS:
+        return "blocked"
     canon = _canonical_proc_or_name(process_name)
     low = _norm_proc_name(canon)
     stem = low[:-4] if low.endswith(".exe") else low
@@ -272,32 +398,55 @@ def classify_policy(process_name: str) -> str:
         return "blocked"
     if candidates & BROWSER_PROCESSES:
         return "look_only"
+    if raw_low in _MACOS_BROWSER_BUNDLE_IDS:
+        return "look_only"
     return "interactive"
 
 
-def check_blocked_system_window(process_name: str, title: str) -> str | None:
+def check_blocked_system_window(
+    process_name: str,
+    title: str,
+    bundle_id: str = "",
+    hwnd: int | None = None,
+) -> str | None:
     if sys.platform != "darwin":
         return None
     low_proc = _norm_proc_name(process_name)
-    if low_proc in _MACOS_BLOCKED_SETTINGS_PROCS:
-        low_title = (title or "").lower()
+    low_bid = (bundle_id or "").strip().lower()
+    if low_proc in _MACOS_BLOCKED_SETTINGS_PROCS or low_bid in _MACOS_SETTINGS_BUNDLE_IDS:
+        low_title = (title or "").strip().lower()
         for frag in _MACOS_BLOCKED_SETTINGS_TITLE_FRAGS:
             if frag in low_title:
                 return (
                     f"policy_blocked: System Settings security/privacy pane '{title}' is blocked "
                     "(OS security, password, and TCC permission settings require manual human interaction)."
                 )
+        raw_proc_low = (process_name or "").strip().lower()
+        if hwnd is not None and (not low_title or low_title == low_proc or low_title == raw_proc_low):
+            try:
+                if _backend.detect_active_popup(int(hwnd)):
+                    return (
+                        f"policy_blocked: System Settings active popup/sheet on '{title or process_name}' is blocked "
+                        "(OS security, password, and TCC permission settings require manual human interaction)."
+                    )
+            except Exception:
+                return (
+                    f"policy_blocked: System Settings '{title or process_name}' could not be verified safely "
+                    "(OS security, password, and TCC permission settings require manual human interaction)."
+                )
     return None
 
 
-def check_sensitive_editor_title(process_name: str, title: str) -> str | None:
+def check_sensitive_editor_title(process_name: str, title: str, bundle_id: str = "") -> str | None:
     low_proc = _norm_proc_name(process_name)
     stem = low_proc[:-4] if low_proc.endswith(".exe") else low_proc
+    low_bid = (bundle_id or "").strip().lower()
     low_title = (title or "").lower()
     is_editor = (
         low_proc in EDITOR_PROCESSES
         or stem in EDITOR_PROCESSES
         or f"{stem}.exe" in EDITOR_PROCESSES
+        or (low_bid in _MACOS_EDITOR_BUNDLE_IDS if low_bid else False)
         or " - notepad" in low_title
         or "visual studio code" in low_title
         or "textedit" in low_title
@@ -329,6 +478,12 @@ def _is_blocked_launch_target(raw_app: str, cmd: list[str], extra_args: list[str
 # Runtime State & Atomic JSON Storage
 def ensure_runtime_dirs() -> None:
     SHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    if hasattr(os, "getuid"):
+        for d in (RUNTIME_DIR, SHOTS_DIR):
+            try:
+                os.chmod(d, 0o700)
+            except OSError:
+                pass
 
 
 def load_state() -> dict[str, Any]:
@@ -408,19 +563,24 @@ def _store_observation(obs_id: str, obs: dict[str, Any]) -> None:
 def _purge_session_artifacts() -> None:
     with _STATE_LOCK:
         STATE["observations"] = {}
-    try:
-        if SHOTS_DIR.is_dir():
-            for p in SHOTS_DIR.iterdir():
-                if p.is_file() and p.name.startswith("obs_"):
-                    try:
-                        p.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-    except Exception:
-        pass
+    for target_dir, prefixes in (
+        (SHOTS_DIR, ("obs_", "cua_win_", "cua_desk_")),
+        (RUNTIME_DIR, ("cua_win_", "cua_desk_")),
+    ):
+        try:
+            if target_dir.is_dir():
+                for p in target_dir.iterdir():
+                    if p.is_file() and p.name.startswith(prefixes):
+                        try:
+                            p.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+        except Exception:
+            pass
 
 
 _ABORT_EVENT = threading.Event()
+_THREAD_ABORT_CTX = threading.local()
 _SERVER_BOOT_ID = uuid.uuid4().hex[:10]
 _IN_FLIGHT_TOOLS: int = 0
 _LAST_TOOL_ACTIVITY: float = time.time()
@@ -550,10 +710,11 @@ def _read_overlay_pid_info() -> dict[str, Any]:
 def is_overlay_daemon_alive(*, force: bool = False) -> bool:
     global _OVERLAY_ALIVE_CACHE, _OVERLAY_PROC
     now = time.monotonic()
-    pid_info = _read_overlay_pid_info() if (force or _OVERLAY_PROC is None or (now - _OVERLAY_ALIVE_CACHE[0]) >= 0.35) else None
-    if pid_info is not None:
-        st_hud = str(pid_info.get("status") or "").lower()
-        if st_hud == "exiting":
+    pid_info = _read_overlay_pid_info()
+    st_hud = str(pid_info.get("status") or "").lower()
+    hud_pid = int(pid_info.get("pid") or 0)
+    if st_hud == "exiting":
+        if _OVERLAY_PROC is None or hud_pid <= 0 or hud_pid == int(getattr(_OVERLAY_PROC, "pid", 0)):
             _OVERLAY_PROC = None
             _OVERLAY_ALIVE_CACHE = (now, False)
             return False
@@ -566,11 +727,8 @@ def is_overlay_daemon_alive(*, force: bool = False) -> bool:
         return _OVERLAY_ALIVE_CACHE[1]
     alive = False
     try:
-        info = pid_info if pid_info is not None else _read_overlay_pid_info()
-        st_hud = str(info.get("status") or "running").lower()
-        pid = int(info.get("pid") or 0)
-        if st_hud == "running" and pid > 0 and _backend.pid_is_alive(pid):
-            exe_low = _backend.query_pid_exe(pid).lower()
+        if st_hud == "running" and hud_pid > 0 and _backend.pid_is_alive(hud_pid):
+            exe_low = _backend.query_pid_exe(hud_pid).lower()
             if _backend.is_overlay_exe_match(exe_low):
                 alive = True
     except Exception:
@@ -590,14 +748,15 @@ def update_overlay_hud(
     allow_capture: bool = False,
     force_spawn: bool = False,
     force_flush: bool = False,
+    executing_override: bool | None = None,
 ) -> dict[str, Any]:
-    global _OVERLAY_ALIVE_CACHE, _OVERLAY_PROC, _OVERLAY_DIRTY_PAYLOAD
+    global _OVERLAY_ALIVE_CACHE, _OVERLAY_PROC, _OVERLAY_DIRTY_PAYLOAD, _PENDING_USER_CANCEL_TS
     prev = _OVERLAY_DIRTY_PAYLOAD if _OVERLAY_DIRTY_PAYLOAD is not None else read_overlay_state(throttle_stat_sec=0.04)
     now = time.time()
     now_m = time.monotonic()
     style = cursor_style or str(prev.get("cursorStyle") or "sleek_dart")
     eff_label = (_BATCH_STAGE_LABEL if (active and _BATCH_STAGE_LABEL) else label) or "Active"
-    is_exec = _IN_FLIGHT_TOOLS > 0
+    is_exec = (_IN_FLIGHT_TOOLS > 0) if executing_override is None else bool(executing_override)
     eff_idle = max(2.0, min(float(ttl_sec if ttl_sec <= 1800.0 else _HUD_IDLE_TIMEOUT_SEC), 1800.0))
     payload: dict[str, Any] = {
         "active": bool(active),
@@ -632,6 +791,12 @@ def update_overlay_hud(
         _backend.restore_os_cursors_safe()
         return payload | {"daemonRunning": False, "spawnedPid": None}
 
+    pre_pid_info = _read_overlay_pid_info()
+    if str(pre_pid_info.get("status") or "").lower() == "exiting" and pre_pid_info.get("reason") == "esc":
+        esc_ts = float(pre_pid_info.get("stoppedAt") or 0.0)
+        if esc_ts > _LAST_HANDLED_ESC_TS and (now - esc_ts <= _GRANT_IDLE_TTL_SEC):
+            _PENDING_USER_CANCEL_TS = max(_PENDING_USER_CANCEL_TS, esc_ts)
+
     alive = is_overlay_daemon_alive(force=force_flush)
     must_write = (
         force_flush
@@ -650,13 +815,19 @@ def update_overlay_hud(
     if (desk == "default" or force_spawn) and not alive:
         if _OVERLAY_DIRTY_PAYLOAD is not None:
             _write_overlay_state(payload)
+        prev_pid = int(pre_pid_info.get("pid") or 0)
+        prev_status = str(pre_pid_info.get("status") or "").lower()
         proc = _backend.spawn_overlay_hud(RUNTIME_DIR)
         if proc is not None:
             _OVERLAY_PROC = proc
             spawned_pid = int(proc.pid)
             _OVERLAY_ALIVE_CACHE = (time.monotonic(), True)
             alive = True
-            _atomic_write_json(OVERLAY_PID_FILE, {"pid": spawned_pid, "status": "running", "startedAt": now})
+            cur_pid_info = _read_overlay_pid_info()
+            cur_pid = int(cur_pid_info.get("pid") or 0)
+            cur_status = str(cur_pid_info.get("status") or "").lower()
+            if not (cur_status == "exiting" and cur_pid == spawned_pid) and not (prev_status == "exiting" and spawned_pid == prev_pid):
+                _atomic_write_json(OVERLAY_PID_FILE, {"pid": spawned_pid, "status": "running", "startedAt": now})
 
     return payload | {"daemonRunning": alive, "spawnedPid": spawned_pid}
 
@@ -669,9 +840,20 @@ def _revoke_all_on_emergency(reason_label: str) -> None:
     update_overlay_hud(False, reason_label, force_flush=True)
 
 
+def _handle_mid_action_esc() -> None:
+    global _LAST_HANDLED_ESC_TS, _PENDING_USER_CANCEL_TS
+    _LAST_HANDLED_ESC_TS = max(_LAST_HANDLED_ESC_TS, time.time())
+    _PENDING_USER_CANCEL_TS = 0.0
+    _revoke_all_on_emergency("Idle")
+    raise RuntimeError(
+        "user_closed_computer_use: Computer Use was closed by user (Esc); session permissions revoked."
+    )
+
+
 def check_emergency_stop(*, check_corner: bool = True) -> None:
     global _LAST_HANDLED_ESC_TS, _PENDING_USER_CANCEL_TS
-    if _ABORT_EVENT.is_set():
+    req_abort = getattr(_THREAD_ABORT_CTX, "event", None)
+    if (req_abort is not None and req_abort.is_set()) or _ABORT_EVENT.is_set():
         raise RuntimeError("mcp_deadline_exceeded: Tool call aborted by watchdog timeout.")
     if _backend.is_escape_pressed():
         now_esc = time.time()
@@ -735,7 +917,15 @@ def inspect_hwnd(hwnd: int) -> dict[str, Any] | None:
         return None
     pid, proc_name, exe_path, is_elev = _get_cached_proc_meta(hwnd)
     low_proc = _norm_proc_name(proc_name)
-    if _IN_BATCH_DEPTH > 0 and low_proc not in EDITOR_PROCESSES and low_proc not in _MACOS_BLOCKED_SETTINGS_PROCS:
+    bundle_id = str(getattr(_backend, "get_window_bundle_id", lambda _: "")(hwnd) or "")
+    low_bid = bundle_id.strip().lower()
+    is_sensitive_proc = (
+        low_proc in EDITOR_PROCESSES
+        or low_bid in _MACOS_EDITOR_BUNDLE_IDS
+        or low_proc in _MACOS_BLOCKED_SETTINGS_PROCS
+        or low_bid in _MACOS_SETTINGS_BUNDLE_IDS
+    )
+    if _IN_BATCH_DEPTH > 0 and not is_sensitive_proc:
         now_m = time.monotonic()
         t_key = (int(hwnd), pid)
         cached_t = _NON_EDITOR_TITLE_CACHE.get(t_key)
@@ -748,8 +938,8 @@ def inspect_hwnd(hwnd: int) -> dict[str, Any] | None:
         title = _backend.get_window_title_safe(hwnd, timeout_ms=120)
     bounds = _backend.get_window_bounds(hwnd)
     fg = _backend.get_foreground_hwnd()
-    tier = classify_policy(proc_name) if sys.platform == "darwin" else classify_policy(exe_path or proc_name)
-    if tier != "blocked" and check_blocked_system_window(proc_name, title) is not None:
+    tier = classify_policy(proc_name, bundle_id=bundle_id) if sys.platform == "darwin" else classify_policy(exe_path or proc_name)
+    if tier != "blocked" and check_blocked_system_window(proc_name, title, bundle_id=bundle_id, hwnd=hwnd) is not None:
         tier = "blocked"
     with _STATE_LOCK:
         grants = STATE.get("grants", {})
@@ -760,6 +950,7 @@ def inspect_hwnd(hwnd: int) -> dict[str, Any] | None:
         "pid": pid,
         "processName": proc_name,
         "exePath": exe_path,
+        "bundleId": bundle_id,
         "title": title,
         "bounds": bounds,
         "isForeground": _backend.is_foreground_for_window(hwnd, fg),
@@ -772,20 +963,29 @@ def inspect_hwnd(hwnd: int) -> dict[str, Any] | None:
     }
 
 
-def require_window_permission(hwnd: int, *, need_input: bool) -> tuple[dict[str, Any], str | None]:
+def require_window_permission(
+    hwnd: int,
+    *,
+    need_input: bool,
+    allow_minimized: bool = False,
+) -> tuple[dict[str, Any], str | None]:
     sync_state()
     if _backend.is_desktop_locked():
         return {}, "desktop_locked: Desktop session is locked. Ask the user to unlock before using Computer Use."
     info = inspect_hwnd(hwnd)
-    if info is None or not info["isVisible"]:
+    if info is None or (not info["isVisible"] and not (allow_minimized and info["isMinimized"])):
         return {}, f"window_unavailable: Window {hwnd} is no longer open or visible."
     proc_low = _norm_proc_name(info["processName"])
     tier = info["policyTier"]
-    sys_blk = check_blocked_system_window(info["processName"], info["title"])
+    sys_blk = check_blocked_system_window(
+        info["processName"], info["title"], bundle_id=info.get("bundleId", ""), hwnd=hwnd
+    )
     if sys_blk:
         return info, sys_blk
     if tier == "blocked":
         return info, f"policy_blocked: Process '{info['processName']}' is on the mandatory Computer Use deny-list (terminals, password managers, OS security, and agent UIs are blocked)."
+    if info["isElevated"] and not _backend.is_process_elevated(os.getpid()):
+        return info, f"elevated_window_uipi: Target '{info['processName']}' is running elevated (root/Administrator); standard-user access is blocked."
     with _STATE_LOCK:
         grants = STATE.get("grants", {})
         grant = grants.get(proc_low) or grants.get(info["processName"].lower())
@@ -796,9 +996,7 @@ def require_window_permission(hwnd: int, *, need_input: bool) -> tuple[dict[str,
     if need_input:
         if grant_mode == "look_only":
             return info, f"tier_look_only: '{info['processName']}' is granted in look_only mode (prefer a dedicated browser automation tool, or explicitly re-grant with allow_browser_input=true if user-authorized)."
-        if info["isElevated"] and not _backend.is_process_elevated(os.getpid()):
-            return info, f"elevated_window_uipi: Target '{info['processName']}' is running elevated (root/Administrator); standard-user input is blocked."
-        sens_err = check_sensitive_editor_title(info["processName"], info["title"])
+        sens_err = check_sensitive_editor_title(info["processName"], info["title"], bundle_id=info.get("bundleId", ""))
         if sens_err:
             return info, sens_err
     return info, None
@@ -975,8 +1173,9 @@ def _build_window_entry(hwnd: int, title: str, fg_hwnd: int) -> dict[str, Any]:
     minimized = _backend.is_window_minimized(hwnd)
     bounds = _backend.get_window_bounds(hwnd)
     pid, proc_name, exe_path = _backend.get_process_info(hwnd)
-    tier = classify_policy(proc_name) if sys.platform == "darwin" else classify_policy(exe_path or proc_name)
-    if tier != "blocked" and check_blocked_system_window(proc_name, title) is not None:
+    bundle_id = str(getattr(_backend, "get_window_bundle_id", lambda _: "")(hwnd) or "")
+    tier = classify_policy(proc_name, bundle_id=bundle_id) if sys.platform == "darwin" else classify_policy(exe_path or proc_name)
+    if tier != "blocked" and check_blocked_system_window(proc_name, title, bundle_id=bundle_id, hwnd=hwnd) is not None:
         tier = "blocked"
     low_proc = _norm_proc_name(proc_name)
     with _STATE_LOCK:
@@ -988,6 +1187,7 @@ def _build_window_entry(hwnd: int, title: str, fg_hwnd: int) -> dict[str, Any]:
         "pid": pid,
         "processName": proc_name,
         "exePath": exe_path,
+        "bundleId": bundle_id,
         "title": title,
         "foreground": _backend.is_foreground_for_window(hwnd, fg_hwnd),
         "minimized": minimized,
@@ -1026,7 +1226,7 @@ def cu_status(_: dict[str, Any]) -> dict[str, Any]:
 def cu_list_windows(arguments: dict[str, Any]) -> dict[str, Any]:
     sync_state()
     max_results = max(1, min(int(arguments.get("max_results", 60)), 200))
-    include_minimized = bool(arguments.get("include_minimized", True))
+    include_minimized = _parse_bool(arguments.get("include_minimized"), True)
     fg = _backend.get_foreground_hwnd()
     out: list[dict[str, Any]] = []
     seen: set[int] = set()
@@ -1054,7 +1254,7 @@ def cu_wait_for_window(arguments: dict[str, Any]) -> dict[str, Any]:
     if not title_contains and not process_name:
         return error_result("Provide at least one filter: title_contains and/or process_name.")
     timeout_sec = max(0.5, min(float(arguments.get("timeout_sec", 5.0)), 15.0))
-    include_minimized = bool(arguments.get("include_minimized", True))
+    include_minimized = _parse_bool(arguments.get("include_minimized"), True)
 
     title_needle = title_contains.lower()
     proc_needle = _norm_proc_name(process_name) if process_name else ""
@@ -1113,21 +1313,30 @@ def cu_grant_app(arguments: dict[str, Any]) -> dict[str, Any]:
     sync_state()
     proc_name = str(arguments.get("process_name") or "").strip()
     hwnd = arguments.get("hwnd")
-    if not proc_name and hwnd is not None:
+    bundle_id = ""
+    if hwnd is not None:
         info = inspect_hwnd(int(hwnd))
         if info is None:
             return error_result(f"Window {hwnd} not found.")
-        sys_blk = check_blocked_system_window(info["processName"], info["title"])
+        if info["isElevated"] and not _backend.is_process_elevated(os.getpid()):
+            return error_result(
+                f"elevated_window_uipi: Target '{info['processName']}' is running elevated (root/Administrator); standard-user access is blocked."
+            )
+        sys_blk = check_blocked_system_window(
+            info["processName"], info["title"], bundle_id=info.get("bundleId", ""), hwnd=int(hwnd)
+        )
         if sys_blk:
             return error_result(sys_blk)
-        proc_name = info["processName"]
+        bundle_id = str(info.get("bundleId") or "")
+        if not proc_name:
+            proc_name = info["processName"]
     if not proc_name:
         return error_result("Provide process_name (e.g. 'TextEdit' or 'notepad.exe') or hwnd.")
     low = _norm_proc_name(proc_name)
-    tier = classify_policy(proc_name)
+    tier = classify_policy(proc_name, bundle_id=bundle_id)
     if tier == "blocked":
         return error_result(f"policy_blocked: '{proc_name}' cannot be granted (hard-blocked security/terminal/agent category).")
-    allow_browser_input = bool(arguments.get("allow_browser_input", False))
+    allow_browser_input = _parse_bool(arguments.get("allow_browser_input"), False)
     mode = "interactive" if (tier == "interactive" or allow_browser_input) else "look_only"
     now_ep = time.time()
     display_proc = (low if (sys.platform == "win32" and "." not in proc_name) else proc_name)
@@ -1151,7 +1360,7 @@ def cu_grant_app(arguments: dict[str, Any]) -> dict[str, Any]:
 def cu_revoke_app(arguments: dict[str, Any]) -> dict[str, Any]:
     global STATE, _PENDING_USER_CANCEL_TS
     sync_state()
-    if arguments.get("all"):
+    if _parse_bool(arguments.get("all"), False):
         _PENDING_USER_CANCEL_TS = 0.0
         with _STATE_LOCK:
             STATE["grants"] = {}
@@ -1188,9 +1397,9 @@ def _window_matches_app_launch(inf: dict[str, Any] | None, app_key: str, proc_hi
 def cu_launch_app(arguments: dict[str, Any]) -> dict[str, Any]:
     check_emergency_stop()
     app = str(arguments["app"]).strip()
-    auto_grant = bool(arguments.get("auto_grant", True))
-    allow_browser_input = bool(arguments.get("allow_browser_input", False))
-    reuse_existing = bool(arguments.get("reuse_existing", True))
+    auto_grant = _parse_bool(arguments.get("auto_grant"), True)
+    allow_browser_input = _parse_bool(arguments.get("allow_browser_input"), False)
+    reuse_existing = _parse_bool(arguments.get("reuse_existing"), True)
     extra_args = [str(a) for a in (arguments.get("args") or []) if a is not None]
 
     if classify_policy(app) == "blocked" or _norm_proc_name(_canonical_proc_or_name(app)) in _BLOCKED_LAUNCH_RUNTIMES:
@@ -1216,13 +1425,14 @@ def cu_launch_app(arguments: dict[str, Any]) -> dict[str, Any]:
                     _backend.restore_window(h)
                 _backend.activate_hwnd(h)
                 if auto_grant and inf["policyTier"] != "blocked":
-                    cu_grant_app({"process_name": inf["processName"], "allow_browser_input": allow_browser_input})
+                    cu_grant_app({"process_name": inf["processName"], "hwnd": h, "allow_browser_input": allow_browser_input})
                     inf = inspect_hwnd(h)
                 data = {"launched": app, "reusedExisting": True, "pid": inf["pid"] if inf else 0, "window": inf}
                 return tool_result(json.dumps(data, ensure_ascii=False), structured=data)
 
     before = {h for h, _ in _backend.enum_visible_windows(require_title=False)}
     proc = _backend.spawn_detached_app(cmd, extra_args)
+    proc_pid = int(proc.pid) if (proc is not None and getattr(proc, "pid", None)) else None
 
     deadline = time.monotonic() + 5.0
     found_hwnd: int | None = None
@@ -1231,7 +1441,15 @@ def cu_launch_app(arguments: dict[str, Any]) -> dict[str, Any]:
         for h, _ in _backend.enum_visible_windows(require_title=True):
             if h not in before:
                 inf_new = inspect_hwnd(h)
-                if inf_new and inf_new.get("isVisible") and (_window_matches_app_launch(inf_new, app_key, proc_hints) or sys.platform == "win32"):
+                if (
+                    inf_new
+                    and inf_new.get("isVisible")
+                    and inf_new.get("policyTier") != "blocked"
+                    and (
+                        _window_matches_app_launch(inf_new, app_key, proc_hints)
+                        or (proc_pid is not None and int(inf_new.get("pid") or 0) == proc_pid)
+                    )
+                ):
                     found_hwnd = h
                     break
         if found_hwnd is not None:
@@ -1256,29 +1474,72 @@ def cu_launch_app(arguments: dict[str, Any]) -> dict[str, Any]:
                     found_hwnd = h
                     win_info = inf
                     break
-    if auto_grant and win_info and win_info["policyTier"] != "blocked":
-        cu_grant_app({"process_name": win_info["processName"], "allow_browser_input": allow_browser_input})
+    if auto_grant and win_info and win_info["policyTier"] != "blocked" and found_hwnd is not None:
+        cu_grant_app({"process_name": win_info["processName"], "hwnd": found_hwnd, "allow_browser_input": allow_browser_input})
         win_info = inspect_hwnd(found_hwnd)
 
     data = {"launched": app, "reusedExisting": False, "pid": int(proc.pid), "window": win_info}
     return tool_result(json.dumps(data, ensure_ascii=False), structured=data)
 
 
+def _check_desktop_crop_occlusion(
+    target_hwnd: int,
+    vis_left: int,
+    vis_top: int,
+    vis_right: int,
+    vis_bottom: int,
+) -> str | None:
+    """Refuse desktop-crop capture if a blocked or elevated visible window sits above target_hwnd."""
+    vis_wins = _backend.enum_visible_windows(require_title=False)
+    if not any(int(wh) == int(target_hwnd) for wh, _ in vis_wins):
+        return None
+    self_elev = _backend.is_process_elevated(os.getpid())
+    for wh, _ in vis_wins:
+        wh_i = int(wh)
+        if wh_i == int(target_hwnd):
+            break
+        wb = _backend.get_window_bounds(wh_i)
+        if wb["width"] <= 4 or wb["height"] <= 4:
+            continue
+        ow = min(vis_right, wb["left"] + wb["width"]) - max(vis_left, wb["left"])
+        oh = min(vis_bottom, wb["top"] + wb["height"]) - max(vis_top, wb["top"])
+        if ow <= 0 or oh <= 0:
+            continue
+        w_info = inspect_hwnd(wh_i)
+        if w_info is None:
+            continue
+        if w_info.get("policyTier") == "blocked":
+            return (
+                f"occlusion_blocked: Cannot capture window {target_hwnd} via desktop crop while blocked "
+                f"window '{w_info['processName']}' overlaps the capture region."
+            )
+        if w_info.get("isElevated") and not self_elev:
+            return (
+                f"elevated_window_uipi: Cannot capture window {target_hwnd} via desktop crop while elevated "
+                f"window '{w_info['processName']}' overlaps the capture region."
+            )
+    return None
+
+
 def cu_screenshot(arguments: dict[str, Any]) -> dict[str, Any]:
     check_emergency_stop()
+    if _backend.is_desktop_locked():
+        return error_result("desktop_locked: Desktop session is locked. Ask the user to unlock before using Computer Use.")
     hwnd = arguments.get("hwnd")
     max_width = max(320, min(int(arguments.get("max_width", 1366)), 3840))
     img_format = str(arguments.get("format", "png")).strip().lower()
     quality = max(40, min(int(arguments.get("quality", 82)), 95))
-    annotate = bool(arguments.get("annotate", False))
+    annotate = _parse_bool(arguments.get("annotate"), False)
+    restore_if_minimized = _parse_bool(arguments.get("restore_if_minimized"), True)
+    allow_full_desktop = _parse_bool(arguments.get("allow_full_desktop"), False)
     capture_method = "desktop_capture"
 
     if hwnd is not None:
         hwnd = int(hwnd)
-        info, err = require_window_permission(hwnd, need_input=False)
+        info, err = require_window_permission(hwnd, need_input=False, allow_minimized=restore_if_minimized)
         if err:
             return error_result(err)
-        if info["isMinimized"] and bool(arguments.get("restore_if_minimized", True)):
+        if info["isMinimized"] and restore_if_minimized:
             _backend.activate_hwnd(hwnd)
         active_popup = _backend.detect_active_popup(hwnd)
         if active_popup and _backend.current_desktop_name().lower() == "default":
@@ -1288,12 +1549,38 @@ def cu_screenshot(arguments: dict[str, Any]) -> dict[str, Any]:
         if img is not None:
             capture_method = cap_m
         else:
-            desk, vb, _ = _backend.capture_desktop()
             b = _backend.get_window_bounds(hwnd)
-            vis_left = max(vb["left"], b["left"])
-            vis_top = max(vb["top"], b["top"])
-            vis_right = min(vb["left"] + vb["width"], b["left"] + b["width"])
-            vis_bottom = min(vb["top"] + vb["height"], b["top"] + b["height"])
+            crop_rect = dict(b)
+            if active_popup:
+                pb = _backend.get_window_bounds(active_popup)
+                if pb["width"] > 0 and pb["height"] > 0:
+                    u_left = min(crop_rect["left"], pb["left"])
+                    u_top = min(crop_rect["top"], pb["top"])
+                    u_right = max(crop_rect["left"] + crop_rect["width"], pb["left"] + pb["width"])
+                    u_bottom = max(crop_rect["top"] + crop_rect["height"], pb["top"] + pb["height"])
+                    crop_rect = {
+                        "left": u_left,
+                        "top": u_top,
+                        "right": u_right,
+                        "bottom": u_bottom,
+                        "width": u_right - u_left,
+                        "height": u_bottom - u_top,
+                    }
+            vb = _backend.virtual_bounds()
+            vis_left = max(vb["left"], crop_rect["left"])
+            vis_top = max(vb["top"], crop_rect["top"])
+            vis_right = min(vb["left"] + vb["width"], crop_rect["left"] + crop_rect["width"])
+            vis_bottom = min(vb["top"] + vb["height"], crop_rect["top"] + crop_rect["height"])
+            if vis_right <= vis_left + 4 or vis_bottom <= vis_top + 4:
+                return error_result(f"Window {hwnd} has zero visible area ({b}).")
+            occ_err = _check_desktop_crop_occlusion(hwnd, vis_left, vis_top, vis_right, vis_bottom)
+            if occ_err:
+                return error_result(occ_err)
+            desk, vb, _ = _backend.capture_desktop()
+            vis_left = max(vb["left"], crop_rect["left"])
+            vis_top = max(vb["top"], crop_rect["top"])
+            vis_right = min(vb["left"] + vb["width"], crop_rect["left"] + crop_rect["width"])
+            vis_bottom = min(vb["top"] + vb["height"], crop_rect["top"] + crop_rect["height"])
             if vis_right <= vis_left + 4 or vis_bottom <= vis_top + 4:
                 return error_result(f"Window {hwnd} has zero visible area ({b}).")
             desk_sx = desk.width / max(1, vb["width"])
@@ -1309,7 +1596,7 @@ def cu_screenshot(arguments: dict[str, Any]) -> dict[str, Any]:
             capture_method = "popup_composited_capture" if active_popup else "screen_crop_fallback"
         bounds_record = _backend.get_window_bounds(hwnd)
     else:
-        if not bool(arguments.get("allow_full_desktop", False)):
+        if not allow_full_desktop:
             return error_result("Prefer per-window capture by passing hwnd. To capture the entire desktop across all apps, pass allow_full_desktop=true explicitly.")
         img, vb, capture_method = _backend.capture_desktop()
         origin = {"left": vb["left"], "top": vb["top"], "width": vb["width"], "height": vb["height"]}
@@ -1400,19 +1687,23 @@ def cu_observe(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def cu_zoom(arguments: dict[str, Any]) -> dict[str, Any]:
     check_emergency_stop()
+    if _backend.is_desktop_locked():
+        return error_result("desktop_locked: Desktop session is locked. Ask the user to unlock before using Computer Use.")
     try:
         sx, sy, hwnd = resolve_screen_coords(arguments, "x", "y")
     except ValueError as exc:
         return error_result(str(exc))
-    if hwnd is None and not bool(arguments.get("allow_full_desktop", False)):
+    allow_full_desktop = _parse_bool(arguments.get("allow_full_desktop"), False)
+    if hwnd is None and not allow_full_desktop:
         return error_result(
             "allow_full_desktop_required: Pass hwnd (or a window-bound observation_id) for cu_zoom, "
             "or set allow_full_desktop=true explicitly."
         )
     obs_id = arguments.get("observation_id")
     obs = _get_observation(str(obs_id)) if obs_id else None
-    scale_x = float(obs["scaleX"]) if obs else 1.0
-    scale_y = float(obs["scaleY"]) if obs else 1.0
+    coord_space = str(arguments.get("coordinate_space", "observation" if obs_id else "screen"))
+    scale_x = float(obs["scaleX"]) if (obs is not None and coord_space == "observation") else 1.0
+    scale_y = float(obs["scaleY"]) if (obs is not None and coord_space == "observation") else 1.0
     w_logical = max(16.0, min(float(arguments.get("width", 320)) * scale_x, 1600.0))
     h_logical = max(16.0, min(float(arguments.get("height", 240)) * scale_y, 1200.0))
     upscale = max(1, min(int(arguments.get("upscale", 2)), 3))
@@ -1429,20 +1720,26 @@ def cu_zoom(arguments: dict[str, Any]) -> dict[str, Any]:
             backing_y = win_img.height / max(1, origin["height"])
             rx1 = max(0, int(round((sx - origin["left"]) * backing_x)))
             ry1 = max(0, int(round((sy - origin["top"]) * backing_y)))
-            rw = max(1, int(round(w_logical * backing_x)))
-            rh = max(1, int(round(h_logical * backing_y)))
-            rx2 = min(win_img.width, rx1 + rw)
-            ry2 = min(win_img.height, ry1 + rh)
+            rx2 = min(win_img.width, int(round((sx + w_logical - origin["left"]) * backing_x)))
+            ry2 = min(win_img.height, int(round((sy + h_logical - origin["top"]) * backing_y)))
             if rx2 <= rx1 or ry2 <= ry1:
                 return error_result(f"Zoom region ({sx},{sy} {w_logical:.0f}x{h_logical:.0f}) is outside visible bounds of window {hwnd}.")
             crop = win_img.crop((rx1, ry1, rx2, ry2))
-            actual_left = int(round(origin["left"] + rx1 / backing_x))
-            actual_top = int(round(origin["top"] + ry1 / backing_y))
+            actual_left = float(origin["left"] + rx1 / backing_x)
+            actual_top = float(origin["top"] + ry1 / backing_y)
         else:
+            vb = _backend.virtual_bounds()
+            wb = _backend.get_window_bounds(int(hwnd))
+            vis_left = max(vb["left"], wb["left"])
+            vis_top = max(vb["top"], wb["top"])
+            vis_right = min(vb["left"] + vb["width"], wb["left"] + wb["width"])
+            vis_bottom = min(vb["top"] + vb["height"], wb["top"] + wb["height"])
+            occ_err = _check_desktop_crop_occlusion(int(hwnd), vis_left, vis_top, vis_right, vis_bottom)
+            if occ_err:
+                return error_result(occ_err)
             desk, vb, _ = _backend.capture_desktop()
             backing_x = desk.width / max(1, vb["width"])
             backing_y = desk.height / max(1, vb["height"])
-            wb = _backend.get_window_bounds(int(hwnd))
             vis_left = max(vb["left"], wb["left"])
             vis_top = max(vb["top"], wb["top"])
             vis_right = min(vb["left"] + vb["width"], wb["left"] + wb["width"])
@@ -1454,23 +1751,21 @@ def cu_zoom(arguments: dict[str, Any]) -> dict[str, Any]:
             if rx2 <= rx1 or ry2 <= ry1:
                 return error_result(f"Zoom region ({sx},{sy} {w_logical:.0f}x{h_logical:.0f}) is outside visible bounds of window {hwnd} ({wb}).")
             crop = desk.crop((rx1, ry1, rx2, ry2))
-            actual_left = int(round(vb["left"] + rx1 / backing_x))
-            actual_top = int(round(vb["top"] + ry1 / backing_y))
+            actual_left = float(vb["left"] + rx1 / backing_x)
+            actual_top = float(vb["top"] + ry1 / backing_y)
     else:
         desk, vb, _ = _backend.capture_desktop()
         backing_x = desk.width / max(1, vb["width"])
         backing_y = desk.height / max(1, vb["height"])
         rx1 = max(0, int(round((sx - vb["left"]) * backing_x)))
         ry1 = max(0, int(round((sy - vb["top"]) * backing_y)))
-        rw = max(1, int(round(w_logical * backing_x)))
-        rh = max(1, int(round(h_logical * backing_y)))
-        rx2 = min(desk.width, rx1 + rw)
-        ry2 = min(desk.height, ry1 + rh)
+        rx2 = min(desk.width, int(round((sx + w_logical - vb["left"]) * backing_x)))
+        ry2 = min(desk.height, int(round((sy + h_logical - vb["top"]) * backing_y)))
         if rx2 <= rx1 or ry2 <= ry1:
             return error_result(f"Zoom region ({sx},{sy} {w_logical:.0f}x{h_logical:.0f}) is outside desktop bounds.")
         crop = desk.crop((rx1, ry1, rx2, ry2))
-        actual_left = int(round(vb["left"] + rx1 / backing_x))
-        actual_top = int(round(vb["top"] + ry1 / backing_y))
+        actual_left = float(vb["left"] + rx1 / backing_x)
+        actual_top = float(vb["top"] + ry1 / backing_y)
 
     orig_cw, orig_ch = crop.width, crop.height
     if upscale > 1:
@@ -1478,7 +1773,7 @@ def cu_zoom(arguments: dict[str, Any]) -> dict[str, Any]:
 
     zoom_obs_payload = {
         "kind": "zoom",
-        "hwnd": int(hwnd) if hwnd is not None else (obs.get("hwnd") if obs else arguments.get("hwnd")),
+        "hwnd": int(hwnd) if hwnd is not None else None,
         "originX": actual_left,
         "originY": actual_top,
         "originalWidth": orig_cw,
@@ -1487,11 +1782,15 @@ def cu_zoom(arguments: dict[str, Any]) -> dict[str, Any]:
         "returnedHeight": crop.height,
         "scaleX": (orig_cw / backing_x) / crop.width,
         "scaleY": (orig_ch / backing_y) / crop.height,
-        "bounds": _backend.get_window_bounds(int(hwnd)) if hwnd is not None else (_backend.get_window_bounds(int(obs["hwnd"])) if (obs and obs.get("hwnd")) else _backend.virtual_bounds()),
+        "bounds": _backend.get_window_bounds(int(hwnd)) if hwnd is not None else _backend.virtual_bounds(),
     }
     zoom_obs_id = record_observation(zoom_obs_payload)
     b64, saved_path = encode_png(crop, f"{zoom_obs_id}.png")
     meta = (_get_observation(zoom_obs_id) or zoom_obs_payload) | {"savedPath": saved_path, "upscale": upscale}
+    with _STATE_LOCK:
+        has_grants = bool(STATE.get("grants"))
+    if has_grants:
+        update_overlay_hud(True, "Active", ttl_sec=_HUD_IDLE_TIMEOUT_SEC)
     return tool_result(
         f"Zoomed region ({orig_cw}x{orig_ch} -> {crop.width}x{crop.height}, observation_id={zoom_obs_id}).",
         structured=meta,
@@ -1549,7 +1848,7 @@ def cu_ui_tree(arguments: dict[str, Any]) -> dict[str, Any]:
 def cu_focus_window(arguments: dict[str, Any]) -> dict[str, Any]:
     check_emergency_stop()
     hwnd = int(arguments["hwnd"])
-    info, err = require_window_permission(hwnd, need_input=True)
+    info, err = require_window_permission(hwnd, need_input=True, allow_minimized=True)
     if err:
         return error_result(err)
     ok = _backend.activate_hwnd(hwnd)
@@ -1564,7 +1863,7 @@ def cu_click_element(arguments: dict[str, Any]) -> dict[str, Any]:
     check_emergency_stop()
     obs_id = str(arguments["observation_id"])
     elem_idx = int(arguments["element_index"])
-    use_uia_invoke = bool(arguments.get("prefer_uia_invoke", False))
+    use_uia_invoke = _parse_bool(arguments.get("prefer_uia_invoke"), False)
     sync_state()
     obs = _get_observation(obs_id)
     if not obs or obs.get("kind") not in ("ui_tree", "observe"):
@@ -1618,8 +1917,10 @@ def cu_set_value(arguments: dict[str, Any]) -> dict[str, Any]:
         return error_result(f"element_index {elem_idx} not found in {obs_id}.")
 
     cx, cy = int(match["bounds"]["cx"]), int(match["bounds"]["cy"])
+    raw_bg_msg = arguments.get("prefer_background_msg")
+    prefer_bg_msg = _parse_bool(raw_bg_msg) if raw_bg_msg is not None else None
     direct = _backend.set_value_direct(
-        hwnd, obs, match, elem_idx, value, prefer_background_msg=arguments.get("prefer_background_msg")
+        hwnd, obs, match, elem_idx, value, prefer_background_msg=prefer_bg_msg
     )
     if direct is not None:
         update_overlay_hud(True, "Active", click_xy=(cx, cy), ttl_sec=_HUD_IDLE_TIMEOUT_SEC)
@@ -1694,7 +1995,7 @@ def resolve_drag_points(arguments: dict[str, Any]) -> tuple[list[tuple[int, int]
             sx, sy = int(round(rx)), int(round(ry))
         screen_pts.append((sx, sy))
 
-    if bool(arguments.get("closed", False)) and screen_pts[-1] != screen_pts[0]:
+    if _parse_bool(arguments.get("closed"), False) and screen_pts[-1] != screen_pts[0]:
         screen_pts.append(screen_pts[0])
     return screen_pts, hwnd
 
@@ -1794,6 +2095,62 @@ def _build_drag_samples(
     return samples, total_px
 
 
+def _verify_hit_window_allowed(hit_root: int, target_hwnd: int, px: int, py: int) -> str | None:
+    if hit_root <= 0 or hit_root == int(target_hwnd):
+        return None
+    hit_info = inspect_hwnd(hit_root)
+    if hit_info is None:
+        return None
+    if hit_info.get("policyTier") == "blocked":
+        return f"policy_blocked: Point ({px}, {py}) hits blocked window '{hit_info['processName']}'."
+    if hit_info.get("isElevated") and not _backend.is_process_elevated(os.getpid()):
+        return f"elevated_window_uipi: Point ({px}, {py}) hits elevated window '{hit_info['processName']}'."
+    sys_blk = check_blocked_system_window(
+        hit_info["processName"],
+        hit_info["title"],
+        bundle_id=hit_info.get("bundleId", ""),
+        hwnd=hit_root,
+    )
+    if sys_blk:
+        return sys_blk
+    sens_err = check_sensitive_editor_title(
+        hit_info["processName"],
+        hit_info["title"],
+        bundle_id=hit_info.get("bundleId", ""),
+    )
+    if sens_err:
+        return sens_err
+    return None
+
+
+def _verify_foreground_window_allowed(target_hwnd: int, fg: int) -> str | None:
+    if fg <= 0 or fg == int(target_hwnd):
+        return None
+    fg_info = inspect_hwnd(fg)
+    if fg_info is None:
+        return None
+    if fg_info.get("policyTier") == "blocked":
+        return f"policy_blocked: Foreground window {fg} ('{fg_info['processName']}') is blocked."
+    if fg_info.get("isElevated") and not _backend.is_process_elevated(os.getpid()):
+        return f"elevated_window_uipi: Foreground window {fg} ('{fg_info['processName']}') is running elevated."
+    sys_blk = check_blocked_system_window(
+        fg_info["processName"],
+        fg_info["title"],
+        bundle_id=fg_info.get("bundleId", ""),
+        hwnd=fg,
+    )
+    if sys_blk:
+        return sys_blk
+    sens_err = check_sensitive_editor_title(
+        fg_info["processName"],
+        fg_info["title"],
+        bundle_id=fg_info.get("bundleId", ""),
+    )
+    if sens_err:
+        return sens_err
+    return None
+
+
 def cu_click(arguments: dict[str, Any]) -> dict[str, Any]:
     check_emergency_stop()
     try:
@@ -1815,17 +2172,9 @@ def cu_click(arguments: dict[str, Any]) -> dict[str, Any]:
     belongs, hit_root = _backend.verify_point_belongs_to_hwnd(sx, sy, int(hwnd))
     if not belongs:
         return error_result(f"point_occluded: Screen point ({sx}, {sy}) hits window {hit_root}, not target window {hwnd}. Refresh window state.")
-    if hit_root != int(hwnd):
-        hit_info = inspect_hwnd(hit_root)
-        if hit_info is not None:
-            if hit_info.get("policyTier") == "blocked":
-                return error_result(f"policy_blocked: Point ({sx}, {sy}) hits blocked window '{hit_info['processName']}'.")
-            sys_blk = check_blocked_system_window(hit_info["processName"], hit_info["title"])
-            if sys_blk:
-                return error_result(sys_blk)
-            sens_err = check_sensitive_editor_title(hit_info["processName"], hit_info["title"])
-            if sens_err:
-                return error_result(sens_err)
+    hit_err = _verify_hit_window_allowed(hit_root, int(hwnd), sx, sy)
+    if hit_err:
+        return error_result(hit_err)
 
     global _CURSOR_ENGAGED
     button = str(arguments.get("button", "left"))
@@ -1835,7 +2184,7 @@ def cu_click(arguments: dict[str, Any]) -> dict[str, Any]:
 
     _backend.smooth_move_to(
         sx, sy, duration=dur, in_batch=_IN_BATCH_DEPTH > 0,
-        on_esc_abort=lambda: update_overlay_hud(False, "Stopped (Esc)", force_flush=True),
+        on_esc_abort=_handle_mid_action_esc,
     )
     _backend.ensure_child_canvas_focus(sx, sy, int(hwnd), hitting_owned_popup=hitting_owned_popup)
     _backend.send_mouse_click(button=button, clicks=clicks, interval=0.04 if clicks > 1 else 0.0, x=sx, y=sy)
@@ -1847,6 +2196,8 @@ def cu_click(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def cu_move(arguments: dict[str, Any]) -> dict[str, Any]:
     check_emergency_stop()
+    if _backend.is_desktop_locked():
+        return error_result("desktop_locked: Desktop session is locked. Ask the user to unlock before using Computer Use.")
     try:
         sx, sy, hwnd = resolve_screen_coords(arguments, "x", "y")
     except ValueError as exc:
@@ -1861,7 +2212,7 @@ def cu_move(arguments: dict[str, Any]) -> dict[str, Any]:
         update_overlay_hud(True, "Active", cursor_xy=(sx, sy), ttl_sec=_HUD_IDLE_TIMEOUT_SEC)
     _backend.smooth_move_to(
         sx, sy, duration=duration, in_batch=_IN_BATCH_DEPTH > 0,
-        on_esc_abort=lambda: update_overlay_hud(False, "Stopped (Esc)", force_flush=True),
+        on_esc_abort=_handle_mid_action_esc,
     )
     _CURSOR_ENGAGED = True
     return tool_result(f"Moved pointer to screen ({sx}, {sy}).", structured={"screenX": sx, "screenY": sy})
@@ -1890,10 +2241,13 @@ def cu_drag(arguments: dict[str, Any]) -> dict[str, Any]:
             return error_result(
                 f"point_occluded: Drag waypoint[{ci}] ({px}, {py}) hits window {hit_root}, not target window {hwnd}."
             )
+        hit_err = _verify_hit_window_allowed(hit_root, int(hwnd), px, py)
+        if hit_err:
+            return error_result(hit_err)
 
     global _CURSOR_ENGAGED
-    closed = bool(arguments.get("closed", False))
-    smooth = bool(arguments.get("smooth", False))
+    closed = _parse_bool(arguments.get("closed"), False)
+    smooth = _parse_bool(arguments.get("smooth"), False)
     hold_ms = max(0, min(int(arguments.get("hold_ms", 0)), 1000))
     button = str(arguments.get("button", "left"))
 
@@ -1919,7 +2273,7 @@ def cu_drag(arguments: dict[str, Any]) -> dict[str, Any]:
         pre_dur = min(0.026, max(0.010, 0.010 + (min(pre_dist, 1200.0) / 1200.0) * 0.016))
         _backend.smooth_move_to(
             sx0, sy0, duration=pre_dur, in_batch=_IN_BATCH_DEPTH > 0,
-            on_esc_abort=lambda: update_overlay_hud(False, "Stopped (Esc)", force_flush=True),
+            on_esc_abort=_handle_mid_action_esc,
         )
     else:
         _backend.send_mouse_move_abs(sx0, sy0)
@@ -1929,7 +2283,7 @@ def cu_drag(arguments: dict[str, Any]) -> dict[str, Any]:
     drag_seq = [(sx0, sy0), *samples]
     _backend.send_mouse_drag(
         drag_seq, button=button, duration=duration, hold_ms=hold_ms,
-        on_esc_abort=lambda: _revoke_all_on_emergency("Idle"),
+        on_esc_abort=_handle_mid_action_esc,
     )
 
     update_overlay_hud(True, "Active", click_xy=(sx_end, sy_end), ttl_sec=_HUD_IDLE_TIMEOUT_SEC)
@@ -1970,12 +2324,15 @@ def cu_scroll(arguments: dict[str, Any]) -> dict[str, Any]:
     belongs, hit_root = _backend.verify_point_belongs_to_hwnd(sx, sy, int(hwnd))
     if not belongs:
         return error_result(f"point_occluded: Scroll point ({sx}, {sy}) hits window {hit_root}, not target window {hwnd}.")
+    hit_err = _verify_hit_window_allowed(hit_root, int(hwnd), sx, sy)
+    if hit_err:
+        return error_result(hit_err)
     global _CURSOR_ENGAGED
     clicks = max(-50, min(int(arguments.get("clicks", -3)), 50))
-    horizontal = bool(arguments.get("horizontal", False))
+    horizontal = _parse_bool(arguments.get("horizontal"), False)
     _backend.smooth_move_to(
         sx, sy, duration=0.04, in_batch=_IN_BATCH_DEPTH > 0,
-        on_esc_abort=lambda: update_overlay_hud(False, "Stopped (Esc)", force_flush=True),
+        on_esc_abort=_handle_mid_action_esc,
     )
     _backend.send_mouse_wheel(clicks, horizontal=horizontal, x=sx, y=sy)
     update_overlay_hud(True, "Active", click_xy=(sx, sy), ttl_sec=_HUD_IDLE_TIMEOUT_SEC)
@@ -1984,6 +2341,19 @@ def cu_scroll(arguments: dict[str, Any]) -> dict[str, Any]:
         f"Scrolled {clicks} {'horizontal ' if horizontal else ''}wheel steps at ({sx}, {sy}).",
         structured={"hwnd": int(hwnd), "screenX": sx, "screenY": sy, "clicks": clicks, "horizontal": horizontal},
     )
+
+
+def _send_typed_with_esc(payload: str, *, chunk: bool) -> None:
+    try:
+        if chunk:
+            _backend.send_unicode_chunk(payload)
+        else:
+            _backend.send_unicode_char(payload)
+    except RuntimeError as exc:
+        msg = str(exc)
+        if "emergency_stop" in msg and "escape" in msg.lower():
+            _handle_mid_action_esc()
+        raise
 
 
 def cu_type(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1995,16 +2365,23 @@ def cu_type(arguments: dict[str, Any]) -> dict[str, Any]:
     info, err = require_window_permission(hwnd, need_input=True)
     if err:
         return error_result(err)
-    if bool(arguments.get("activate_first", False)):
+    if _parse_bool(arguments.get("activate_first"), False):
         _backend.activate_hwnd(hwnd)
     fg = _backend.get_foreground_hwnd()
     if not _backend.is_foreground_for_window(hwnd, fg):
         return error_result(f"focus_collision: Expected window {hwnd} in foreground before typing, but foreground is window {fg}. Focus or click target field first.")
+    fg_err = _verify_foreground_window_allowed(hwnd, fg)
+    if fg_err:
+        return error_result(fg_err)
 
     update_overlay_hud(True, "Active", ttl_sec=_HUD_IDLE_TIMEOUT_SEC)
-    if bool(arguments.get("clear_first", False)):
-        if not _backend.is_foreground_for_window(hwnd, _backend.get_foreground_hwnd()):
+    if _parse_bool(arguments.get("clear_first"), False):
+        fg_clr = _backend.get_foreground_hwnd()
+        if not _backend.is_foreground_for_window(hwnd, fg_clr):
             return error_result(f"focus_collision: Window {hwnd} lost focus before clear_first.")
+        fg_err = _verify_foreground_window_allowed(hwnd, fg_clr)
+        if fg_err:
+            return error_result(fg_err)
         _backend.send_key_chord(_backend.SELECT_ALL_MODIFIER, "a", target_hwnd=hwnd)
         time.sleep(0.02)
         _backend.send_key_chord("backspace", target_hwnd=hwnd)
@@ -2015,26 +2392,42 @@ def cu_type(arguments: dict[str, Any]) -> dict[str, Any]:
         chunk_size = 20
         for start in range(0, len(text), chunk_size):
             check_emergency_stop()
-            if not _backend.is_foreground_for_window(hwnd, _backend.get_foreground_hwnd()):
+            fg_cur = _backend.get_foreground_hwnd()
+            if not _backend.is_foreground_for_window(hwnd, fg_cur):
                 return error_result(f"focus_collision: Focus moved away from window {hwnd} after {typed} characters; halted immediately.")
+            if fg_cur != fg:
+                fg_err = _verify_foreground_window_allowed(hwnd, fg_cur)
+                if fg_err:
+                    return error_result(fg_err)
+                fg = fg_cur
             part = text[start : start + chunk_size]
-            _backend.send_unicode_chunk(part)
+            _send_typed_with_esc(part, chunk=True)
             typed += len(part)
             if interval > 0:
                 time.sleep(interval)
     else:
         for ch in text:
             check_emergency_stop()
-            if not _backend.is_foreground_for_window(hwnd, _backend.get_foreground_hwnd()):
+            fg_cur = _backend.get_foreground_hwnd()
+            if not _backend.is_foreground_for_window(hwnd, fg_cur):
                 return error_result(f"focus_collision: Focus moved away from window {hwnd} after {typed} characters; halted immediately.")
-            _backend.send_unicode_char(ch)
+            if fg_cur != fg:
+                fg_err = _verify_foreground_window_allowed(hwnd, fg_cur)
+                if fg_err:
+                    return error_result(fg_err)
+                fg = fg_cur
+            _send_typed_with_esc(ch, chunk=False)
             typed += 1
             time.sleep(interval)
 
-    if bool(arguments.get("press_enter", False)):
+    if _parse_bool(arguments.get("press_enter"), False):
         check_emergency_stop()
-        if not _backend.is_foreground_for_window(hwnd, _backend.get_foreground_hwnd()):
+        fg_ent = _backend.get_foreground_hwnd()
+        if not _backend.is_foreground_for_window(hwnd, fg_ent):
             return error_result(f"focus_collision: Window {hwnd} lost focus before press_enter.")
+        fg_err = _verify_foreground_window_allowed(hwnd, fg_ent)
+        if fg_err:
+            return error_result(fg_err)
         _backend.send_key_chord("enter", target_hwnd=hwnd)
 
     update_overlay_hud(True, "Active", ttl_sec=_HUD_IDLE_TIMEOUT_SEC)
@@ -2049,15 +2442,33 @@ def cu_key(arguments: dict[str, Any]) -> dict[str, Any]:
     hwnd = int(arguments["hwnd"])
     keys = arguments["keys"]
     if isinstance(keys, str):
-        s_k = keys.strip()
-        if s_k == "+":
-            keys = ["+"]
-        elif s_k.endswith("++"):
-            keys = [*(p.strip() for p in s_k[:-2].split("+") if p.strip()), "+"]
+        if keys == " ":
+            keys = ["space"]
         else:
-            keys = [k.strip() for k in s_k.split("+") if k.strip()]
+            s_k = keys.strip()
+            if s_k == "+":
+                keys = ["+"]
+            elif s_k.endswith("++"):
+                keys = [*(("space" if p == " " else p.strip()) for p in s_k[:-2].split("+")), "+"]
+            elif s_k:
+                keys = [("space" if k == " " else k.strip()) for k in s_k.split("+")]
+            else:
+                keys = []
     if not isinstance(keys, list) or not keys:
         return error_result("keys must be a non-empty list or '+'-separated chord string.")
+    norm_keys: list[str] = []
+    for k in keys:
+        if not isinstance(k, str):
+            return error_result("Each key token must be a string.")
+        if k == " ":
+            norm_keys.append("space")
+        else:
+            ks = k.strip()
+            if not ks:
+                return error_result("keys must not contain empty tokens.")
+            norm_keys.append(ks)
+    keys = norm_keys
+
     _KEY_ALIAS_CANON = {
         "control": "ctrl", "ctrlleft": "ctrl", "ctrlright": "ctrl",
         "shiftleft": "shift", "shiftright": "shift",
@@ -2071,20 +2482,27 @@ def cu_key(arguments: dict[str, Any]) -> dict[str, Any]:
         if k.lower() in blocked_single:
             return error_result(f"policy_blocked: System/Super key chord '{k}' is forbidden.")
     canon_set = {_KEY_ALIAS_CANON.get(k.lower(), k.lower()) for k in keys}
-    if canon_set in ({"ctrl", "esc"}, {"ctrl", "shift", "esc"}):
+    if {"ctrl", "esc"} <= canon_set:
         return error_result(f"policy_blocked: System chord '{'+'.join(k.lower() for k in keys)}' is forbidden (Start menu / Task Manager).")
-    if sys.platform == "darwin" and canon_set in ({"cmd", "space"}, {"cmd", "opt", "esc"}, {"cmd", "ctrl", "q"}):
+    if sys.platform == "darwin" and (
+        {"cmd", "space"} <= canon_set
+        or {"cmd", "opt", "esc"} <= canon_set
+        or {"cmd", "ctrl", "q"} <= canon_set
+    ):
         return error_result(f"policy_blocked: System chord '{'+'.join(k.lower() for k in keys)}' is forbidden (Spotlight / Force Quit / Lock Screen).")
 
     info, err = require_window_permission(hwnd, need_input=True)
     if err:
         return error_result(err)
-    if bool(arguments.get("activate_first", True)):
+    if _parse_bool(arguments.get("activate_first"), True):
         _backend.activate_hwnd(hwnd)
     fg = _backend.get_foreground_hwnd()
     if not _backend.is_foreground_for_window(hwnd, fg) and not (fg == 0 and _backend.current_desktop_name().lower() != "default"):
         return error_result(f"focus_collision: Expected window {hwnd} in foreground before keys, but foreground is window {fg}.")
-    if check_sensitive_editor_title(info["processName"], info["title"]):
+    fg_err = _verify_foreground_window_allowed(hwnd, fg)
+    if fg_err:
+        return error_result(fg_err)
+    if check_sensitive_editor_title(info["processName"], info["title"], bundle_id=info.get("bundleId", "")):
         return error_result("sensitive_file_guard: Refused key chord in protected file editor.")
     norm = [k.lower() for k in keys]
     update_overlay_hud(True, "Active", ttl_sec=_HUD_IDLE_TIMEOUT_SEC)
@@ -2094,10 +2512,10 @@ def cu_key(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def cu_overlay(arguments: dict[str, Any]) -> dict[str, Any]:
-    active = bool(arguments.get("active", True))
+    active = _parse_bool(arguments.get("active"), True)
     label = str(arguments.get("label") or ("Active" if active else "Idle"))
     ttl_sec = float(arguments.get("ttl_sec", _HUD_IDLE_TIMEOUT_SEC))
-    allow_capture = bool(arguments.get("allow_capture", False))
+    allow_capture = _parse_bool(arguments.get("allow_capture"), False)
     cursor_style = arguments.get("cursor_style")
     cx = arguments.get("click_x")
     cy = arguments.get("click_y")
@@ -2109,6 +2527,7 @@ def cu_overlay(arguments: dict[str, Any]) -> dict[str, Any]:
         active, label, click_xy=click_xy, cursor_xy=cursor_xy,
         cursor_style=str(cursor_style) if cursor_style else None,
         ttl_sec=ttl_sec, allow_capture=allow_capture, force_flush=True,
+        executing_override=False,
     )
     state_txt = "shown" if active else "hidden"
     return tool_result(
@@ -2173,7 +2592,7 @@ def cu_step(arguments: dict[str, Any]) -> dict[str, Any]:
     is_multi_goal = len(sub_goals) > 1 or bool(isinstance(raw_goals, list) and raw_goals)
     max_steps = len(sub_goals) if is_multi_goal else max(1, min(int(arguments.get("max_steps", 1)), 24))
     conf_floor = max(0.5, min(float(arguments.get("confidence_floor", 0.80)), 0.99))
-    prefer_uia = bool(arguments.get("prefer_uia_invoke", False))
+    prefer_uia = _parse_bool(arguments.get("prefer_uia_invoke"), False)
 
     _, err = require_window_permission(hwnd, need_input=True)
     if err:
@@ -2287,7 +2706,7 @@ def cu_clipboard_read(arguments: dict[str, Any]) -> dict[str, Any]:
     check_emergency_stop()
     if _backend.is_desktop_locked():
         return error_result("desktop_locked: Desktop is locked.")
-    if not bool(arguments.get("allow_clipboard", False)):
+    if not _parse_bool(arguments.get("allow_clipboard"), False):
         return error_result("clipboard_permission_required: Pass allow_clipboard=true explicitly to read Unicode text from the clipboard.")
     max_chars = max(1, min(int(arguments.get("max_chars", 16000)), 64000))
     data, err = _backend.clipboard_read(max_chars)
@@ -2360,19 +2779,45 @@ def cu_batch(arguments: dict[str, Any]) -> dict[str, Any]:
             return error_result(f"policy_blocked: steps_file must be a .json file ({sf_path.name}).")
         if sf_path.is_symlink():
             return error_result(f"policy_blocked: Symlinks are not allowed for steps_file ({sf_path}).")
+        sf_abs = Path(os.path.abspath(str(sf_path)))
+        if sf_abs.is_symlink():
+            return error_result(f"policy_blocked: Symlinks are not allowed for steps_file ({sf_path}).")
+        for parent in sf_abs.parents:
+            if parent.is_symlink():
+                if sys.platform == "darwin" and str(parent) in ("/tmp", "/var", "/etc"):
+                    try:
+                        if parent.lstat().st_uid == 0:
+                            continue
+                    except OSError:
+                        pass
+                return error_result(f"policy_blocked: Symlink parent directories are not allowed for steps_file ({parent}).")
         if not sf_path.is_file():
             return error_result(f"steps_file not found: {sf_path}")
         try:
-            if sf_path.stat().st_size > 1_048_576:
-                return error_result(f"steps_file_too_large: steps_file exceeds 1 MiB limit ({sf_path}).")
-            loaded = json.loads(sf_path.read_text(encoding="utf-8"))
+            open_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(str(sf_abs), open_flags)
+            try:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode):
+                    return error_result(f"policy_blocked: steps_file must be a regular file ({sf_path}).")
+                if st.st_size > 1_048_576:
+                    return error_result(f"steps_file_too_large: steps_file exceeds 1 MiB limit ({sf_path}).")
+                with os.fdopen(fd, "r", encoding="utf-8") as fh:
+                    fd = -1
+                    loaded = json.load(fh)
+            finally:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
         except Exception as exc:
             return error_result(f"Invalid JSON in steps_file {sf_path}: {exc}")
         steps = loaded.get("steps") if isinstance(loaded, dict) else loaded
     if not isinstance(steps, list) or not (1 <= len(steps) <= 80):
         return error_result("Provide 'steps' or 'steps_file' containing 1..80 action objects.")
-    stop_on_error = bool(arguments.get("stop_on_error", True))
-    compact = bool(arguments.get("compact", len(steps) > 16))
+    stop_on_error = _parse_bool(arguments.get("stop_on_error"), True)
+    compact = _parse_bool(arguments.get("compact"), len(steps) > 16)
     active_hwnd: int | None = int(arguments["hwnd"]) if arguments.get("hwnd") is not None else None
     stage_label = str(arguments.get("stage") or "").strip()[:48] or None
 
@@ -2435,7 +2880,7 @@ def cu_batch(arguments: dict[str, Any]) -> dict[str, Any]:
                 raw_hw is None
                 and active_hwnd is not None
                 and "observation_id" not in step_args
-                and not step_args.get("allow_full_desktop")
+                and not _parse_bool(step_args.get("allow_full_desktop"), False)
                 and act not in (
                     "status", "wait_for_window", "list_windows", "launch_app",
                     "revoke_app", "overlay", "clipboard_read", "clipboard_write", "choose",
@@ -3004,7 +3449,6 @@ def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return error_result(f"Unknown tool: {name}")
     _LAST_TOOL_ACTIVITY = time.time()
     _IN_FLIGHT_TOOLS += 1
-    tool_ok = False
     _PASSIVE_HUD_TOOLS = ("cu_revoke_app", "cu_overlay", "cu_status", "cu_list_windows")
     try:
         with _STATE_LOCK:
@@ -3016,9 +3460,7 @@ def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 else "Active"
             )
             update_overlay_hud(True, str(start_lbl or "Active"), ttl_sec=_HUD_IDLE_TIMEOUT_SEC, force_flush=True)
-        res = handler(arguments)
-        tool_ok = not bool(res.get("isError"))
-        return res
+        return handler(arguments)
     except Exception as exc:
         print(traceback.format_exc(), file=sys.stderr, flush=True)
         return error_result(f"{type(exc).__name__}: {exc}")
@@ -3028,7 +3470,7 @@ def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         _LAST_TOOL_ACTIVITY = _LAST_TOOL_DONE_AT
         with _STATE_LOCK:
             has_grants = bool(STATE.get("grants"))
-        if _IN_FLIGHT_TOOLS == 0 and tool_ok and name not in _PASSIVE_HUD_TOOLS and has_grants:
+        if _IN_FLIGHT_TOOLS == 0 and name not in _PASSIVE_HUD_TOOLS and has_grants:
             keep_lbl = (
                 arguments.get("stage")
                 if (name == "cu_batch" and isinstance(arguments, dict) and arguments.get("stage"))
@@ -3076,14 +3518,14 @@ def _cleanup_on_exit() -> None:
         return
     _EXIT_CLEANED = True
     try:
-        with _STATE_LOCK:
-            if STATE.get("grants"):
-                STATE["grants"] = {}
-                save_state(STATE)
+        _purge_session_artifacts()
     except Exception:
         pass
     try:
-        _purge_session_artifacts()
+        with _STATE_LOCK:
+            STATE["grants"] = {}
+            STATE["observations"] = {}
+            save_state(STATE)
     except Exception:
         pass
     try:
@@ -3145,6 +3587,19 @@ def serve_stdio() -> int:
     loaded_mtime_ns = this_file.stat().st_mtime_ns if this_file.is_file() else -1
     live_handler = handle_mcp_request
     atexit.register(_cleanup_on_exit)
+
+    def _on_termination_signal(_signum: int, _frame: Any) -> None:
+        _cleanup_on_exit()
+        raise SystemExit(0)
+
+    for _sig_name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        _sig = getattr(signal, _sig_name, None)
+        if _sig is not None:
+            try:
+                signal.signal(_sig, _on_termination_signal)
+            except (OSError, ValueError):
+                pass
+
     wd_stop = _start_lifecycle_watchdog()
     rpc_pool = ThreadPoolExecutor(max_workers=1)
     try:
@@ -3178,11 +3633,25 @@ def serve_stdio() -> int:
                     sys.stdout.flush()
                     continue
                 req_id = msg.get("id")
+                req_abort = threading.Event()
                 _ABORT_EVENT.clear()
-                fut = rpc_pool.submit(live_handler, msg)
+
+                def _run_req(
+                    fn: Callable[[dict[str, Any]], dict[str, Any] | None],
+                    payload: dict[str, Any],
+                    abort_ev: threading.Event,
+                ) -> dict[str, Any] | None:
+                    _THREAD_ABORT_CTX.event = abort_ev
+                    try:
+                        return fn(payload)
+                    finally:
+                        _THREAD_ABORT_CTX.event = None
+
+                fut = rpc_pool.submit(_run_req, live_handler, msg, req_abort)
                 try:
                     resp = fut.result(timeout=45.0)
                 except FuturesTimeoutError:
+                    req_abort.set()
                     _ABORT_EVENT.set()
                     _backend.kill_ui_bridge()
                     time.sleep(0.15)

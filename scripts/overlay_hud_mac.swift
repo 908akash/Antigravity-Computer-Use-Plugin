@@ -76,10 +76,16 @@ private func resolveRuntimeDir() -> URL {
     }
     let home = FileManager.default.homeDirectoryForCurrentUser
     candidates.append(home.appendingPathComponent("Library/Application Support/antigravity-computer-use", isDirectory: true))
-    candidates.append(URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("antigravity-computer-use", isDirectory: true))
+    let tempCand = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("antigravity-computer-use-\(getuid())", isDirectory: true)
+    candidates.append(tempCand)
     for cand in candidates {
         do {
-            try FileManager.default.createDirectory(at: cand, withIntermediateDirectories: true)
+            if cand.path == tempCand.path {
+                try FileManager.default.createDirectory(at: cand, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cand.path)
+            } else {
+                try FileManager.default.createDirectory(at: cand, withIntermediateDirectories: true)
+            }
             let probe = cand.appendingPathComponent(".hud_probe_\(getpid())")
             try Data().write(to: probe)
             try? FileManager.default.removeItem(at: probe)
@@ -124,7 +130,8 @@ private func screenForQuartzPoint(_ qx: CGFloat, _ qy: CGFloat) -> NSScreen {
     let ay = ph - qy
     let pt = NSPoint(x: qx, y: ay)
     for scr in NSScreen.screens {
-        if scr.frame.contains(pt) {
+        let f = scr.frame
+        if pt.x >= f.minX && pt.x <= f.maxX && pt.y >= f.minY && pt.y <= f.maxY {
             return scr
         }
     }
@@ -471,14 +478,16 @@ final class OverlayHUDController {
     var exiting: Bool = false
     var allowCapture: Bool = false
     var currentScreenFrame: NSRect = .zero
+    var lockFd: Int32
 
-    init(runtimeDir: URL, selfTest: Bool) {
+    init(runtimeDir: URL, selfTest: Bool, lockFd: Int32 = -1) {
         self.runtimeDir = runtimeDir
         self.stateFile = runtimeDir.appendingPathComponent("overlay_state.json")
         self.pidFile = runtimeDir.appendingPathComponent("overlay_pid.json")
         self.sessionFile = runtimeDir.appendingPathComponent("session_state.json")
         self.brandMarkFile = runtimeDir.appendingPathComponent("brand_mark.png")
         self.selfTest = selfTest
+        self.lockFd = lockFd
     }
 
     private func makeOverlayWindow(frame: NSRect, allowCapture: Bool) -> NSWindow {
@@ -661,6 +670,11 @@ final class OverlayHUDController {
         timer = nil
         if let gm = globalKeyMonitor { NSEvent.removeMonitor(gm); globalKeyMonitor = nil }
         if let lm = localKeyMonitor { NSEvent.removeMonitor(lm); localKeyMonitor = nil }
+        if lockFd >= 0 {
+            flock(lockFd, LOCK_UN)
+            close(lockFd)
+            lockFd = -1
+        }
 
         // Smooth 0.16s fade-out before exit
         NSAnimationContext.runAnimationGroup({ ctx in
@@ -712,6 +726,13 @@ final class OverlayHUDController {
         // 4. Three-stage idle caption lifecycle (Active/Stage -> Thinking... -> Waiting for model... -> exit at 600s)
         let executing = (st["executing"] as? Bool) ?? false
         let updatedAt = (st["updatedAt"] as? NSNumber)?.doubleValue ?? nowWall
+        if executing {
+            let leaseExp = (st["leaseExpiresAt"] as? NSNumber)?.doubleValue ?? 0
+            if leaseExp > 0 && nowWall > leaseExp {
+                triggerExit(reason: "lease_expired")
+                return
+            }
+        }
         let lastDoneAt = (st["lastToolDoneAt"] as? NSNumber)?.doubleValue ?? updatedAt
         let idleSec = executing ? 0.0 : max(0.0, nowWall - max(lastDoneAt, updatedAt))
         let thinkWait = max(10.0, min((st["thinkingWaitSec"] as? NSNumber)?.doubleValue ?? WAITING_DELAY_SEC, 300.0))
@@ -798,7 +819,7 @@ if !isSelfTest {
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory) // No Dock icon, no menu bar takeover, click-through overlay
 
-let controller = OverlayHUDController(runtimeDir: rtDir, selfTest: isSelfTest)
+let controller = OverlayHUDController(runtimeDir: rtDir, selfTest: isSelfTest, lockFd: lockFd)
 DispatchQueue.main.async {
     controller.start()
 }

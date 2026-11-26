@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.exe
+!scripts/launch_mcp.exe
 *.sha256
 *.tmp
 *.log

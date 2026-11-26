@@ -40,7 +40,7 @@ Run `cu_status` at any time to verify `accessibilityTrusted: true` and `screenRe
 
 **macOS (Terminal / zsh):**
 ```sh
-curl -fsSL "https://github.com/908akash/Antigravity-Computer-Use-Plugin/releases/latest/download/computer-use-v3.2.0.zip" -o /tmp/computer-use-v3.2.0.zip && mkdir -p "$HOME/.gemini/config/plugins" && unzip -oq /tmp/computer-use-v3.2.0.zip -d "$HOME/.gemini/config/plugins" && "$HOME/.gemini/config/plugins/computer-use/scripts/launch_mcp" --self-test
+curl -fsSL "https://github.com/908akash/Antigravity-Computer-Use-Plugin/releases/latest/download/computer-use-v3.2.0.zip" -o /tmp/computer-use-v3.2.0.zip && mkdir -p "$HOME/.gemini/config/plugins" && unzip -oq /tmp/computer-use-v3.2.0.zip -d "$HOME/.gemini/config/plugins" && chmod +x "$HOME/.gemini/config/plugins/computer-use/scripts/launch_mcp" && "$HOME/.gemini/config/plugins/computer-use/scripts/launch_mcp" --self-test
 ```
 
 **Windows (PowerShell):**
@@ -157,7 +157,7 @@ Zero telemetry, zero analytics, and zero background network beacons. Screenshots
 | `CUA_HUD_IDLE_TIMEOUT_SEC` | `600` | Idle seconds before the status pill closes automatically (`30`..`1800`) |
 | `CUA_GRANT_TTL_SEC` | `600` | Inactivity seconds before unused app grants expire (`30`..`1800`) |
 | `CUA_HUD_BRAND` | `Antigravity` | Brand prefix displayed inside the status pill |
-| `CUA_HUD_HUMAN_TAKEOVER` | `0` | Set to `1` to close the overlay on physical mouse motion while idle (off by default) |
+| `CUA_HUD_HUMAN_TAKEOVER` | `0` | (Windows only) Set to `1` to close the overlay on physical mouse motion while idle (off by default) |
 | `CUA_RUNTIME_DIR` | `.runtime` | Runtime folder override (falls back to `~/Library/Application Support/antigravity-computer-use` on macOS or `%LOCALAPPDATA%\computer-use-win32` on Windows) |
 | `CUA_PYTHON` | empty | Explicit path to a Python 3.9+ (macOS) or 3.10+ (Windows) interpreter |
 | `CUA_MATCHER_ENABLED` | `1` | Set to `0` to keep `cu_choose` and `cu_step` on Tier 1 local scoring only |
@@ -231,6 +231,8 @@ computer-use/
 ├── scripts/
 │   ├── launch_mcp
 │   ├── launch_mcp.cmd
+│   ├── launch_mcp.exe
+│   ├── launch_mcp_win.cs
 │   ├── computer_use_server.py
 │   ├── macos_backend.py
 │   ├── macos_ax_bridge.swift

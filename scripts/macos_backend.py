@@ -55,16 +55,20 @@ def _file_sha256(path: Path) -> str:
 
 _COMPILE_LOCK = threading.Lock()
 _BIN_CACHE: dict[str, Path | None] = {}
+_BIN_FAIL_UNTIL: dict[str, float] = {}
+_COMPILE_RETRY_COOLDOWN_SEC = 10.0
 
 
 def _ensure_compiled_swift(src_file: Path, bin_name: str, timeout_sec: float = 45.0) -> Path | None:
     with _COMPILE_LOCK:
-        if bin_name in _BIN_CACHE:
-            cached = _BIN_CACHE[bin_name]
-            if cached is None or cached.is_file():
-                return cached
+        cached = _BIN_CACHE.get(bin_name)
+        if cached is not None and cached.is_file():
+            return cached
+        if _BIN_FAIL_UNTIL.get(bin_name, 0.0) > time.monotonic():
+            return None
         if not src_file.is_file():
-            _BIN_CACHE[bin_name] = None
+            _BIN_CACHE.pop(bin_name, None)
+            _BIN_FAIL_UNTIL[bin_name] = time.monotonic() + _COMPILE_RETRY_COOLDOWN_SEC
             return None
         bin_dir = _RUNTIME_DIR / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
@@ -75,6 +79,7 @@ def _ensure_compiled_swift(src_file: Path, bin_name: str, timeout_sec: float = 4
             try:
                 recorded = sha_path.read_text(encoding="utf-8").strip()
                 if recorded == f"{src_sha}:{_file_sha256(bin_path)}":
+                    _BIN_FAIL_UNTIL.pop(bin_name, None)
                     _BIN_CACHE[bin_name] = bin_path
                     return bin_path
             except OSError:
@@ -88,7 +93,8 @@ def _ensure_compiled_swift(src_file: Path, bin_name: str, timeout_sec: float = 4
         elif Path(swiftc).is_file():
             cmd = [swiftc, "-O", str(src_file), "-o", str(bin_path)]
         else:
-            _BIN_CACHE[bin_name] = None
+            _BIN_CACHE.pop(bin_name, None)
+            _BIN_FAIL_UNTIL[bin_name] = time.monotonic() + _COMPILE_RETRY_COOLDOWN_SEC
             return None
 
         tmp_bin = bin_dir / f".{bin_name}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp"
@@ -102,6 +108,7 @@ def _ensure_compiled_swift(src_file: Path, bin_name: str, timeout_sec: float = 4
                     sha_path.write_text(f"{src_sha}:{_file_sha256(bin_path)}\n", encoding="utf-8")
                 except OSError:
                     pass
+                _BIN_FAIL_UNTIL.pop(bin_name, None)
                 _BIN_CACHE[bin_name] = bin_path
                 return bin_path
         except Exception:
@@ -111,7 +118,8 @@ def _ensure_compiled_swift(src_file: Path, bin_name: str, timeout_sec: float = 4
                 tmp_bin.unlink(missing_ok=True)
             except OSError:
                 pass
-        _BIN_CACHE[bin_name] = None
+        _BIN_CACHE.pop(bin_name, None)
+        _BIN_FAIL_UNTIL[bin_name] = time.monotonic() + _COMPILE_RETRY_COOLDOWN_SEC
         return None
 
 
@@ -240,6 +248,7 @@ def _call_bridge(payload: dict[str, Any], *, timeout_sec: float = 3.0) -> dict[s
                 raw = _drain_line(_BRIDGE_OUT_Q, timeout_sec)
                 if raw:
                     return json.loads(raw)
+                kill_ui_bridge()
             except Exception:
                 kill_ui_bridge()
     return None
@@ -322,8 +331,8 @@ def _inspect_raw(hwnd: int, *, max_age_sec: float = 0.08) -> dict[str, Any] | No
         if resp.get("found") and isinstance(resp.get("window"), dict):
             win = resp["window"]
             with _WIN_SNAP_LOCK:
-                if len(_WIN_SNAP_CACHE) > 256:
-                    _WIN_SNAP_CACHE.clear()
+                while len(_WIN_SNAP_CACHE) >= 256 and hwnd not in _WIN_SNAP_CACHE:
+                    _WIN_SNAP_CACHE.pop(next(iter(_WIN_SNAP_CACHE)))
                 _WIN_SNAP_CACHE[hwnd] = (now, win)
             return win
         return None
@@ -342,15 +351,52 @@ def invalidate_window_cache(hwnd: int | None = None) -> None:
             _WIN_SNAP_CACHE.pop(int(hwnd), None)
 
 
+def _query_session_locked_fallback() -> bool:
+    try:
+        res = subprocess.run(
+            ["/usr/sbin/ioreg", "-n", "Root", "-d1", "-a"],
+            capture_output=True,
+            timeout=1.5,
+        )
+        if res.returncode == 0 and res.stdout:
+            data = plistlib.loads(res.stdout)
+            users = data.get("IOConsoleUsers") if isinstance(data, dict) else None
+            if isinstance(users, list):
+                uid = os.getuid() if hasattr(os, "getuid") else -1
+                for entry in users:
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("kCGSSessionUserIDKey") == uid or entry.get("kCGSSessionOnConsoleKey") is True:
+                        if bool(entry.get("CGSSessionScreenIsLocked", False)):
+                            return True
+                        if entry.get("kCGSSessionOnConsoleKey") is False:
+                            return True
+    except Exception:
+        pass
+    raw = _run_jxa(
+        "ObjC.import('CoreGraphics'); ObjC.import('ApplicationServices'); "
+        "const d = ObjC.deepUnwrap($.CGSessionCopyCurrentDictionary()); "
+        "JSON.stringify({locked: Boolean(d && (d.CGSSessionScreenIsLocked || d.kCGSSessionOnConsoleKey === false))});",
+        timeout_sec=1.5,
+    )
+    if raw:
+        try:
+            return bool(json.loads(raw).get("locked", False))
+        except Exception:
+            pass
+    return False
+
+
 def _status_raw() -> dict[str, Any]:
     resp = _call_bridge({"cmd": "status"}, timeout_sec=2.0)
     if isinstance(resp, dict) and "desktopName" in resp:
         return resp
+    locked = _query_session_locked_fallback()
     return {
         "accessibilityTrusted": False,
         "screenRecordingGranted": False,
-        "desktopName": "Default",
-        "desktopLocked": False,
+        "desktopName": "Locked" if locked else "Default",
+        "desktopLocked": locked,
         "cursor": {"x": 0, "y": 0},
         "virtualDesktop": {"left": 0, "top": 0, "width": 1440, "height": 900},
         "monitors": [[0.0, 0.0, 1440.0, 900.0, 2.0]],
@@ -557,6 +603,11 @@ def get_process_info(hwnd: int) -> tuple[int, str, str]:
     return int(info.get("pid") or 0), str(info.get("processName") or "unknown"), str(info.get("exePath") or "")
 
 
+def get_window_bundle_id(hwnd: int) -> str:
+    info = _inspect_raw(hwnd, max_age_sec=0.08)
+    return str(info.get("bundleId") or "") if info else ""
+
+
 def enum_visible_windows(*, require_title: bool = True, timeout_ms: int = 120) -> list[tuple[int, str]]:
     resp = _call_bridge(
         {"cmd": "list_windows", "includeMinimized": True, "requireTitle": require_title},
@@ -577,6 +628,8 @@ def enum_visible_windows(*, require_title: bool = True, timeout_ms: int = 120) -
             title = str(w.get("title") or "")
             if require_title and not title:
                 continue
+            while len(_WIN_SNAP_CACHE) >= 256 and wid not in _WIN_SNAP_CACHE:
+                _WIN_SNAP_CACHE.pop(next(iter(_WIN_SNAP_CACHE)))
             _WIN_SNAP_CACHE[wid] = (now, w)
             out.append((wid, title))
     return out
@@ -602,13 +655,15 @@ def restore_window(hwnd: int) -> None:
 
 
 def is_foreground_for_window(hwnd: int, fg_hwnd: int) -> bool:
-    if fg_hwnd == int(hwnd):
+    if int(fg_hwnd) == int(hwnd):
         return True
     if fg_hwnd <= 0:
         return False
     t_pid = get_window_pid(hwnd)
     f_pid = get_window_pid(fg_hwnd)
-    return t_pid > 0 and t_pid == f_pid
+    if t_pid <= 0 or t_pid != f_pid:
+        return False
+    return detect_active_popup(hwnd) == int(fg_hwnd)
 
 
 def verify_point_belongs_to_hwnd(sx: int, sy: int, target_hwnd: int) -> tuple[bool, int]:
@@ -651,6 +706,7 @@ def capture_window(hwnd: int) -> tuple[Image.Image | None, dict[str, int], str]:
     if bounds["width"] <= 4 or bounds["height"] <= 4:
         return None, origin, ""
 
+    _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(prefix="cua_win_", suffix=".png", dir=str(_RUNTIME_DIR))
     os.close(tmp_fd)
     try:
@@ -677,9 +733,54 @@ def capture_window(hwnd: int) -> tuple[Image.Image | None, dict[str, int], str]:
             pass
 
 
+def _capture_multimonitor_per_display(vb: dict[str, int], mons: list[tuple[int, int, int, int]]) -> Image.Image | None:
+    disp_paths: list[str] = []
+    disp_imgs: list[tuple[Image.Image, tuple[int, int, int, int]]] = []
+    try:
+        for i, mon in enumerate(mons):
+            fd, d_path = tempfile.mkstemp(prefix=f"cua_disp{i + 1}_", suffix=".png", dir=str(_RUNTIME_DIR))
+            os.close(fd)
+            disp_paths.append(d_path)
+            res = subprocess.run(
+                ["/usr/sbin/screencapture", "-x", "-D", str(i + 1), d_path],
+                capture_output=True,
+                timeout=5.0,
+            )
+            if res.returncode != 0 or not Path(d_path).is_file() or Path(d_path).stat().st_size == 0:
+                return None
+            with Image.open(d_path) as raw_d:
+                disp_imgs.append((raw_d.convert("RGB"), mon))
+        if not disp_imgs:
+            return None
+        canvas_scale = 2 if any(
+            im.width > max(1, (r - l)) * 1.4 for im, (l, _t, r, _b) in disp_imgs
+        ) else 1
+        cw = max(1, int(vb["width"]) * canvas_scale)
+        ch = max(1, int(vb["height"]) * canvas_scale)
+        canvas = Image.new("RGB", (cw, ch), (0, 0, 0))
+        for im, (l, t, r, b) in disp_imgs:
+            tw = max(1, int(r - l) * canvas_scale)
+            th = max(1, int(b - t) * canvas_scale)
+            if im.size != (tw, th):
+                im = im.resize((tw, th), Image.Resampling.BILINEAR)
+            ox = (l - vb["left"]) * canvas_scale
+            oy = (t - vb["top"]) * canvas_scale
+            canvas.paste(im, (ox, oy))
+        return canvas
+    except Exception:
+        return None
+    finally:
+        for d_path in disp_paths:
+            try:
+                Path(d_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def capture_desktop() -> tuple[Image.Image, dict[str, int], str]:
     """Capture the active display / desktop via `screencapture -x`."""
     vb = virtual_bounds()
+    _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(prefix="cua_desk_", suffix=".png", dir=str(_RUNTIME_DIR))
     os.close(tmp_fd)
     try:
@@ -688,8 +789,18 @@ def capture_desktop() -> tuple[Image.Image, dict[str, int], str]:
             capture_output=True,
             timeout=5.0,
         )
-        if res.returncode != 0 or not Path(tmp_path).is_file() or Path(tmp_path).stat().st_size == 0:
-            res = subprocess.run(["/usr/sbin/screencapture", "-x", tmp_path], capture_output=True, timeout=5.0)
+        if res.returncode == 0 and Path(tmp_path).is_file() and Path(tmp_path).stat().st_size > 0:
+            with Image.open(tmp_path) as raw_img:
+                img = raw_img.convert("RGB")
+            return img, vb, "screencapture_desktop"
+
+        mons = get_monitor_rects()
+        if len(mons) > 1:
+            composited = _capture_multimonitor_per_display(vb, mons)
+            if composited is not None:
+                return composited, vb, "screencapture_desktop"
+
+        res = subprocess.run(["/usr/sbin/screencapture", "-x", tmp_path], capture_output=True, timeout=5.0)
         if res.returncode != 0 or not Path(tmp_path).is_file() or Path(tmp_path).stat().st_size == 0:
             raise RuntimeError(
                 "screen_recording_permission_required: macOS screencapture failed. "
@@ -697,7 +808,12 @@ def capture_desktop() -> tuple[Image.Image, dict[str, int], str]:
             )
         with Image.open(tmp_path) as raw_img:
             img = raw_img.convert("RGB")
-        return img, vb, "screencapture_desktop"
+        if mons:
+            l, t, r, b = mons[0]
+            out_bounds = {"left": l, "top": t, "width": max(1, r - l), "height": max(1, b - t)}
+        else:
+            out_bounds = vb
+        return img, out_bounds, "screencapture_desktop"
     finally:
         try:
             Path(tmp_path).unlink(missing_ok=True)
@@ -827,16 +943,36 @@ def send_key_chord(*keys: str, target_hwnd: int = 0) -> None:
         raise RuntimeError(str(resp["error"]))
 
 
-def send_unicode_char(ch: str) -> None:
+def _raise_type_bridge_error(
+    resp: dict[str, Any] | None,
+    *,
+    on_esc_abort: Callable[[], None] | None = None,
+) -> None:
+    if resp is None:
+        if is_escape_pressed():
+            if on_esc_abort is not None:
+                on_esc_abort()
+            raise RuntimeError("emergency_stop: Physical Escape key detected during typing.")
+        raise RuntimeError("macos_ax_bridge_unavailable: Could not send Unicode text via Swift bridge.")
+    err = str(resp.get("error") or "")
+    if err:
+        low = err.lower()
+        if "emergency_stop" in low or "escape" in low:
+            if on_esc_abort is not None:
+                on_esc_abort()
+            if not low.startswith("emergency_stop"):
+                raise RuntimeError(f"emergency_stop: {err}")
+        raise RuntimeError(err)
+
+
+def send_unicode_char(ch: str, *, on_esc_abort: Callable[[], None] | None = None) -> None:
     resp = _call_bridge({"cmd": "type_text", "text": ch, "interval": 0.0}, timeout_sec=2.0)
-    if isinstance(resp, dict) and resp.get("error"):
-        raise RuntimeError(str(resp["error"]))
+    _raise_type_bridge_error(resp, on_esc_abort=on_esc_abort)
 
 
-def send_unicode_chunk(chunk: str) -> None:
+def send_unicode_chunk(chunk: str, *, on_esc_abort: Callable[[], None] | None = None) -> None:
     resp = _call_bridge({"cmd": "type_text", "text": chunk, "interval": 0.001}, timeout_sec=max(3.0, len(chunk) * 0.03 + 2.0))
-    if isinstance(resp, dict) and resp.get("error"):
-        raise RuntimeError(str(resp["error"]))
+    _raise_type_bridge_error(resp, on_esc_abort=on_esc_abort)
 
 
 # AXUIElement Tree & Element Direct Actions
@@ -1057,8 +1193,16 @@ def resolve_installed_app(
 _VERSIONED_RUNTIME_RE = re.compile(r"^(?:python|perl|ruby|php|lua|node|bash|zsh|sh|fish|tclsh|wish)[\d._-]*$", re.I)
 
 
+def _is_url_arg(s: str) -> bool:
+    low = (s or "").strip(" \"'").lower()
+    return low.startswith("http://") or low.startswith("https://") or low.startswith("mailto:")
+
+
 def _is_blocked_runtime_name(token: str, blocked_runtimes: set[str], blocked_aumid_fragments: tuple[str, ...]) -> bool:
-    low = (token or "").strip(" \"'").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower()
+    raw_tok = (token or "").strip(" \"'")
+    if _is_url_arg(raw_tok):
+        return False
+    low = raw_tok.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower()
     if low.endswith(".app"):
         low = low[:-4]
     if low in blocked_runtimes or bool(_VERSIONED_RUNTIME_RE.match(low)):
@@ -1105,8 +1249,16 @@ def is_blocked_launch_target(
         return target_path.name
 
     for arg in (extra_args or []):
-        if classify_policy_fn(arg) == "blocked" or _is_blocked_runtime_name(arg, blocked_runtimes, blocked_aumid_fragments):
-            return arg
+        s_arg = str(arg or "").strip(" \"'")
+        if not s_arg or _is_url_arg(s_arg):
+            continue
+        parts = list(s_arg.split("=", 1)) if "=" in s_arg else [s_arg]
+        for part in parts:
+            p_str = part.strip(" \"'")
+            if not p_str or _is_url_arg(p_str):
+                continue
+            if classify_policy_fn(p_str) == "blocked" or _is_blocked_runtime_name(p_str, blocked_runtimes, blocked_aumid_fragments):
+                return arg
     return None
 
 

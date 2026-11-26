@@ -40,7 +40,7 @@ Both native accessibility bridges redact password field values (`AXSecureTextFie
 
 ## Local privacy and screenshot cleanup
 
-Zero telemetry and zero analytics. Screenshots, observations, and compiled helper binaries remain strictly inside the local runtime folder (`CUA_RUNTIME_DIR` / `PLUGIN_DATA` / `.runtime` / `~/Library/Application Support/antigravity-computer-use`). Screenshots and observations are purged automatically on `cu_revoke_app({"all": true})` and on MCP server exit.
+Zero telemetry and zero analytics. Screenshots, observations, and compiled helper binaries remain strictly inside the local runtime folder (`CUA_RUNTIME_DIR` / `PLUGIN_DATA` / `.runtime` / `~/Library/Application Support/antigravity-computer-use` / `%LOCALAPPDATA%\computer-use-win32`). Screenshots and observations are purged automatically on `cu_revoke_app({"all": true})` and on MCP server exit.
 
 ## Physical emergency stops
 

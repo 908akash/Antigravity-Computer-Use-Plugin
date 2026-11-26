@@ -1,6 +1,6 @@
 """Native Win32 System Cursor Takeover, Dedicated Pitch-Black Top Pill & Screen-Border Glow HUD.
 
-Architecture (v3.1.0):
+Architecture (v3.2.0):
   1. True OS Hardware Cursor Takeover (`SetSystemCursor` + `CreateIconIndirect`):
      - Replaces `OCR_NORMAL` (32512), `OCR_HAND` (32649), `OCR_IBEAM` (32513),
        `OCR_WAIT` (32514), and `OCR_APPSTARTING` (32650) with crisp 32-bit ARGB
@@ -824,7 +824,7 @@ PILL_SHIMMER_FRAMES = 28
 PILL_SHIMMER_CYCLE_SEC = 2.15  # Constant calm glimmer sweep regardless of frame count or action speed
 
 _RAW_TELEMETRY_RE = re.compile(
-    r"(?:\.(?:exe|dll|ps1|py|cmd|bat)\b|\bhwnd\b|0x[0-9a-f]+|[\\]|"
+    r"(?:\.(?:exe|app|dll|ps1|py|cmd|bat|sh|swift)\b|\bhwnd\b|\bcgwindow\b|0x[0-9a-f]+|[\\]|"
     r"[a-z]:/|(?:[a-z_][a-z0-9_.-]*/[a-z_][a-z0-9_.-]*)|"
     r"^(?:inspecting|ui tree|focused|invoke|click|set value|set text|typing in|typed|key)\b)",
     re.I,
@@ -1584,6 +1584,9 @@ def run_overlay_daemon(idle_timeout_sec: float = 600.0, self_test: bool = False)
                     old_b = border_dib
                     border_dib = CachedDIBSurface(build_base_glow_frame(w, h))
                     old_b.close()
+                    elapsed_mon = time.monotonic() - start_t
+                    breath_alpha_mon = int(214 + 38 * (0.5 + 0.5 * math.sin(elapsed_mon * 2.0)))
+                    border_dib.blit(hwnd_border, source_alpha=breath_alpha_mon, dst_xy=(mon_x, mon_y))
                     user32.SetWindowPos(hwnd_border, HWND_TOPMOST, mon_x, mon_y, w, h, SWP_NOACTIVATE)
                     _request_async_pill(cur_caption, dpi_scale)
 

@@ -1,5 +1,6 @@
 @echo off
 setlocal EnableExtensions
+set "NoDefaultCurrentDirectoryInExePath=1"
 chcp 65001 >nul 2>nul
 
 for %%I in ("%~dp0..") do set "PLUGIN_ROOT=%%~fI"
@@ -21,10 +22,26 @@ del /q "%RUNTIME_ROOT%\.cua_write_probe" >nul 2>nul
 goto :runtime_ready
 
 :fallback_runtime
-set "RUNTIME_ROOT="
-if defined LOCALAPPDATA set "RUNTIME_ROOT=%LOCALAPPDATA%\computer-use-win32"
-if not defined RUNTIME_ROOT if defined TEMP set "RUNTIME_ROOT=%TEMP%\computer-use-win32"
-if not defined RUNTIME_ROOT set "RUNTIME_ROOT=%USERPROFILE%\.computer-use-win32"
+if not defined LOCALAPPDATA goto :fallback_temp
+set "RUNTIME_ROOT=%LOCALAPPDATA%\computer-use-win32"
+if not exist "%RUNTIME_ROOT%" mkdir "%RUNTIME_ROOT%" >nul 2>nul
+copy /y nul "%RUNTIME_ROOT%\.cua_write_probe" >nul 2>nul
+if errorlevel 1 goto :fallback_temp
+del /q "%RUNTIME_ROOT%\.cua_write_probe" >nul 2>nul
+goto :runtime_ready
+
+:fallback_temp
+if not defined TEMP goto :fallback_userprofile
+set "RUNTIME_ROOT=%TEMP%\computer-use-win32"
+if not exist "%RUNTIME_ROOT%" mkdir "%RUNTIME_ROOT%" >nul 2>nul
+copy /y nul "%RUNTIME_ROOT%\.cua_write_probe" >nul 2>nul
+if errorlevel 1 goto :fallback_userprofile
+del /q "%RUNTIME_ROOT%\.cua_write_probe" >nul 2>nul
+goto :runtime_ready
+
+:fallback_userprofile
+if not defined USERPROFILE goto :runtime_ready
+set "RUNTIME_ROOT=%USERPROFILE%\.computer-use-win32"
 if not exist "%RUNTIME_ROOT%" mkdir "%RUNTIME_ROOT%" >nul 2>nul
 copy /y nul "%RUNTIME_ROOT%\.cua_write_probe" >nul 2>nul
 if not errorlevel 1 del /q "%RUNTIME_ROOT%\.cua_write_probe" >nul 2>nul
@@ -38,7 +55,8 @@ set "PYLIBS_DIR="
 
 if defined CUA_PYTHON set "CUA_PYTHON=%CUA_PYTHON:"=%"
 if defined CUA_PYTHON call :probe_python "%CUA_PYTHON%"
-if defined PYTHON_EXE goto :run_server
+if defined CUA_PYTHON if defined PYTHON_EXE goto :run_server
+if defined CUA_PYTHON if defined FALLBACK_PY goto :bootstrap_deps
 
 for %%N in (python.exe python3.exe) do (
     for /f "usebackq delims=" %%P in (`where %%N 2^>nul`) do (
@@ -164,5 +182,7 @@ goto :eof
 
 :run_server
 if defined PYLIBS_DIR set "CUA_PYLIBS_DIR=%PYLIBS_DIR%"
+if not defined PYTHONUTF8 set "PYTHONUTF8=1"
+if not defined PYTHONIOENCODING set "PYTHONIOENCODING=utf-8"
 "%PYTHON_EXE%" -u "%SERVER_PY%" %*
 exit /b %errorlevel%
