@@ -8,7 +8,7 @@ This document explains how Antigravity Computer Use operates natively on **both 
 
 ```mermaid
 flowchart TD
-    Host["MCP Host (Antigravity / Standalone)"] -->|"${PLUGIN_ROOT}/scripts/launch_mcp"| Dispatch{"OS Dispatch"}
+    Host["MCP Host (Antigravity / Standalone)"] -->|"cwd=${PLUGIN_ROOT}, ./scripts/launch_mcp"| Dispatch{"OS Dispatch"}
     Dispatch -->|"macOS (POSIX exec #!/bin/sh)"| LaunchMac["scripts/launch_mcp"]
     Dispatch -->|"Windows (PATHEXT -> .cmd)"| LaunchWin["scripts/launch_mcp.cmd"]
     LaunchMac --> Server["scripts/computer_use_server.py v3.2.0"]
@@ -22,9 +22,9 @@ flowchart TD
 ```
 
 ### Extensionless cross-platform `mcp_config.json`
-`mcp_config.json` sets `"command": "${PLUGIN_ROOT}/scripts/launch_mcp"` with no file extension:
-- On **macOS**, the host executes `scripts/launch_mcp` (`#!/bin/sh`, `LF`, `0755`) directly. It discovers Python 3.9+ (including stock Apple Command Line Tools `/usr/bin/python3` 3.9.6 or Homebrew Python 3.12+), installs `pillow` and `numpy` via `pip install --target "$RUNTIME_ROOT/pylibs_cp<XY>"` (avoiding PEP 668 externally-managed errors), and `exec`s `computer_use_server.py`.
-- On **Windows**, Go `os/exec.LookPath` searches `PATHEXT` (`.COM;.EXE;.BAT;.CMD`) and resolves `scripts/launch_mcp` directly to `scripts\launch_mcp.cmd` (`CRLF`), leaving the Windows launcher untouched.
+Antigravity expands `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` inside `"args"`, `"cwd"`, and `"env"` (not inside `"command"`), so `mcp_config.json` sets `"cwd": "${PLUGIN_ROOT}"` and `"command": "./scripts/launch_mcp"` with no file extension:
+- On **macOS**, `forkExec` changes directory into `"cwd"` (`${PLUGIN_ROOT}`) and executes `./scripts/launch_mcp` (`#!/bin/sh`, `LF`, `0755`) directly. It discovers Python 3.9+ (including stock Apple Command Line Tools `/usr/bin/python3` 3.9.6 or Homebrew Python 3.12+), installs `pillow` and `numpy` via `pip install --target "$RUNTIME_ROOT/pylibs_cp<XY>"` (avoiding PEP 668 externally-managed errors), and `exec`s `computer_use_server.py`.
+- On **Windows**, Go `os/exec` (`lookExtensions("./scripts/launch_mcp", c.Dir)`) searches `PATHEXT` (`.COM;.EXE;.BAT;.CMD`) inside `"cwd"` (`${PLUGIN_ROOT}`), ignores the extensionless POSIX script, and resolves `./scripts/launch_mcp` directly to `scripts\launch_mcp.cmd` (`CRLF`), leaving the Windows launcher untouched.
 
 ### Orphan-proof shutdown and artifact purge
 - **macOS**: The lifecycle watchdog records `initial_ppid = os.getppid()` and exits cleanly if `os.getppid() == 1` or `os.kill(ppid, 0)` raises `ProcessLookupError`. Both `macos_ax_bridge` and `overlay_hud_mac` also monitor their parent server PID independently and exit if orphaned.

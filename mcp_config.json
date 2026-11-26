@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "computer-use": {
-      "command": "${PLUGIN_ROOT}/scripts/launch_mcp",
+      "command": "./scripts/launch_mcp",
       "args": [],
       "cwd": "${PLUGIN_ROOT}",
       "env": {

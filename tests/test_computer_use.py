@@ -1189,6 +1189,12 @@ def main() -> int:
             server_mod.STATE["grants"] = old_grants_backup
 
         # Static privacy & dependency hygiene: zero hardcoded user paths (Win & macOS), zero unexpected script imports
+        mcp_cfg = json.loads((PLUGIN_DIR / "mcp_config.json").read_text(encoding="utf-8"))
+        cu_srv_cfg = mcp_cfg["mcpServers"]["computer-use"]
+        assert "${PLUGIN_ROOT}" not in cu_srv_cfg["command"] and "${PLUGIN_DATA}" not in cu_srv_cfg["command"], cu_srv_cfg
+        assert cu_srv_cfg["command"] == "./scripts/launch_mcp", cu_srv_cfg
+        assert cu_srv_cfg["cwd"] == "${PLUGIN_ROOT}", cu_srv_cfg
+
         win_user_path_re = re.compile(r"[a-zA-Z]:\\{1,2}Users\\{1,2}[A-Za-z0-9_ ]+", re.I)
         mac_user_path_re = re.compile(r"/Users/(?!Shared\b)[A-Za-z0-9._-]+")
         scan_exts = {".py", ".cs", ".ps1", ".cmd", ".swift", ".sh", ".json", ".md", ".txt", ".svg"}
